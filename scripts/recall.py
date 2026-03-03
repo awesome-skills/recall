@@ -14,7 +14,7 @@ from pathlib import Path
 
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
-DB_PATH = CLAUDE_DIR / "recall.db"
+DB_PATH = Path.home() / ".recall.db"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
 
@@ -46,6 +46,18 @@ def migrate_schema(conn):
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'claude'")
         conn.commit()
+
+
+def migrate_db_location():
+    """Move recall.db from ~/.claude/ to ~/ if it exists at the old path."""
+    old_path = CLAUDE_DIR / "recall.db"
+    if old_path.exists() and not DB_PATH.exists():
+        old_path.rename(DB_PATH)
+        # Also move the WAL/SHM files if they exist
+        for suffix in ("-wal", "-shm"):
+            old_extra = Path(str(old_path) + suffix)
+            if old_extra.exists():
+                old_extra.rename(Path(str(DB_PATH) + suffix))
 
 
 def extract_text(content):
@@ -447,6 +459,7 @@ def main():
 
     args = parser.parse_args()
 
+    migrate_db_location()
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
     create_schema(conn)

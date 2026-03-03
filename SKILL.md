@@ -4,6 +4,9 @@ description: >
   Search past Claude Code and Codex sessions. Triggers: /recall, "search old conversations",
   "find a past session", "recall a previous conversation", "search session history",
   "what did we discuss", "remember when we"
+metadata:
+  author: arjunkmrm
+  version: "0.2.0"
 ---
 
 # /recall — Search Past Claude & Codex Sessions
@@ -68,7 +71,7 @@ codex resume SESSION_ID
 
 ## Notes
 
-- Index is stored at `~/.claude/recall.db` (SQLite FTS5)
+- Index is stored at `~/.recall.db` (SQLite FTS5, auto-migrated from `~/.claude/recall.db`)
 - Indexes both `~/.claude/projects/` (Claude Code) and `~/.codex/sessions/` (Codex)
 - First run indexes all sessions (a few seconds); subsequent runs are incremental
 - Only user and assistant messages are indexed (tool calls, thinking blocks, state snapshots skipped)
