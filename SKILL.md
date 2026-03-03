@@ -47,7 +47,14 @@ python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
 
 ## After Finding a Match
 
-Once you find a relevant session, read the full transcript:
+To resume a session, `cd` into the project directory shown in the result and run:
+
+```bash
+cd /path/to/project
+claude --resume SESSION_ID
+```
+
+To read the raw transcript instead:
 
 ```bash
 cat ~/.claude/projects/<project-key>/<session-id>.jsonl | python3 -c "
@@ -63,8 +70,6 @@ for line in sys.stdin:
             print()
 "
 ```
-
-Or read the JSONL file directly for full content.
 
 ## Notes
 
