@@ -7,6 +7,7 @@ description: >
 metadata:
   author: arjunkmrm
   version: "0.2.0"
+  license: MIT
 ---
 
 # /recall — Search Past Claude & Codex Sessions
