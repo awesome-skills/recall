@@ -31,7 +31,7 @@ python3 ~/.claude/skills/recall/scripts/recall.py "rust AND async"
 python3 ~/.claude/skills/recall/scripts/recall.py "buffer*"
 
 # Filter by project and recency
-python3 ~/.claude/skills/recall/scripts/recall.py "state machine" --project /Users/arjun/Documents/github/sono --days 7
+python3 ~/.claude/skills/recall/scripts/recall.py "state machine" --project ~/my-project --days 7
 
 # Force reindex
 python3 ~/.claude/skills/recall/scripts/recall.py --reindex "test"
