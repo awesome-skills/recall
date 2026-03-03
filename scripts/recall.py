@@ -344,6 +344,9 @@ def index_sessions(conn, force=False):
     indexed = 0
     skipped = 0
 
+    # Disable FTS5 automerge during bulk insert to avoid repeated segment merges
+    conn.execute("INSERT INTO messages(messages, rank) VALUES('automerge', 0)")
+
     for fpath, source in sources:
         try:
             mtime = os.path.getmtime(fpath)
@@ -376,15 +379,20 @@ def index_sessions(conn, force=False):
              metadata["project"], metadata["slug"], metadata["timestamp"], mtime),
         )
 
-        for role, text in messages:
-            conn.execute(
-                "INSERT INTO messages (session_id, role, text) VALUES (?, ?, ?)",
-                (metadata["session_id"], role, text),
-            )
+        conn.executemany(
+            "INSERT INTO messages (session_id, role, text) VALUES (?, ?, ?)",
+            [(metadata["session_id"], role, text) for role, text in messages],
+        )
 
         indexed += 1
 
     conn.commit()
+
+    # Merge all FTS5 segments into one and restore automerge
+    if indexed > 0:
+        conn.execute("INSERT INTO messages(messages) VALUES('optimize')")
+        conn.execute("INSERT INTO messages(messages, rank) VALUES('automerge', 4)")
+        conn.commit()
 
     # Get totals
     total_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -486,6 +494,7 @@ def main():
     migrate_db_location()
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     create_schema(conn)
     migrate_schema(conn)
 

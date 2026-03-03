@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1
+
+- Batch message inserts with `executemany`
+- Disable FTS5 automerge during bulk insert, optimize after
+- Add MIT license
+
+### Reindex benchmarks (1939 sessions, ~50K messages)
+
+| Version | Time |
+|---|---|
+| 0.2.0 | ~10.4s |
+| 0.2.1 | ~7.4s |
+
 ## 0.2.0
 
 - Add Codex session support — indexes both `~/.claude/projects/` and `~/.codex/sessions/`
