@@ -8,6 +8,16 @@ SKIP_MARKERS = (
     "<environment_context>",
     "<permissions instructions>",
     "# AGENTS.md instructions",
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<command-name>",
+    "<command-message>",
+    "<system-reminder>",
+    "<task-notification>",
+    "<task-id>",
+    "<tool-use-id>",
+    "<bash-stdout>",
+    "<bash-input>",
 )
 
 
@@ -23,3 +33,11 @@ def extract_text(content):
         ]
         return "\n".join(filter(None, parts))
     return ""
+
+
+def is_noise(text):
+    """Return True if text is system noise that should not be indexed or shown as summary."""
+    if not text:
+        return True
+    stripped = text.lstrip()
+    return any(stripped.startswith(marker) for marker in SKIP_MARKERS)

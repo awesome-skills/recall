@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Session overview
+- Store first meaningful user message as `summary` in sessions table
+- Show summary line in `--list` and search output — no more guessing what a session was about
+- Timestamps now display `YYYY-MM-DD HH:MM` for easier identification
+
+### Subagent handling
+- Index `is_subagent` and `parent_session_id` in sessions table
+- Default: hide subagent sessions from `--list` and search results
+- Add `--include-subagents` flag to show them when needed
+
+### Query robustness
+- Auto-quote tokens with special characters (e.g. `local-command-caveat`) to prevent FTS5 syntax errors
+- On FTS query failure, fall back to LIKE substring search instead of returning empty results
+- Apply same `is_noise()` filtering to Claude parser (was Codex-only); filters `<local-command-caveat>`, `<system-reminder>`, `<command-name>`, etc.
+
+### Data quality
+- Infer project path from Claude file path when `cwd` is missing (e.g. `-Users-admin-work` → `/Users/admin/work`)
+- Add `--offset` for result pagination
+
+### Previous (carried from earlier PRs)
 - Add `--list` mode to list sessions by recency without a full-text query
 - Allow `--list` to take an optional query filter
 - Add `--json` output mode for machine-readable search/list results

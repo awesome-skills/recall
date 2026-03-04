@@ -17,7 +17,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from recall_common import SKIP_MARKERS, extract_text
+from recall_common import SKIP_MARKERS, extract_text, is_noise
 
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
@@ -35,7 +35,10 @@ def create_schema(conn):
             project TEXT,
             slug TEXT,
             timestamp INTEGER,
-            mtime REAL
+            mtime REAL,
+            summary TEXT DEFAULT '',
+            is_subagent INTEGER DEFAULT 0,
+            parent_session_id TEXT DEFAULT ''
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(
@@ -49,16 +52,18 @@ def create_schema(conn):
 
 def migrate_schema(conn):
     """Add columns if upgrading from an older schema."""
-    try:
-        conn.execute("SELECT source FROM sessions LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'claude'")
-        conn.commit()
-    try:
-        conn.execute("SELECT file_path FROM sessions LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE sessions ADD COLUMN file_path TEXT DEFAULT ''")
-        conn.commit()
+    for col, default in [
+        ("source", "'claude'"),
+        ("file_path", "''"),
+        ("summary", "''"),
+        ("is_subagent", "0"),
+        ("parent_session_id", "''"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM sessions LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT DEFAULT {default}")
+            conn.commit()
 
 
 def migrate_db_location():
@@ -77,7 +82,10 @@ CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 CJK_SEGMENT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 FTS_SPECIAL_QUERY_RE = re.compile(r'["*():]|(^|\s)(AND|OR|NOT)(\s|$)', re.IGNORECASE)
 CLAUDE_SUBAGENT_RE = re.compile(r"/([^/]+)/subagents/agent-[^/]+\.jsonl$")
+CLAUDE_PROJECT_DIR_RE = re.compile(r"/\.claude/projects/(-[^/]+)")
 LIKE_ESCAPE = "\\"
+# Characters that are FTS5 operators and need quoting when used literally
+FTS_OPERATOR_CHARS = set('(){}[]^~:!@#$&|\\/-')
 
 def escape_like(value):
     """Escape LIKE wildcards in user-provided terms."""
@@ -96,8 +104,8 @@ def subagent_parent_session_id(file_path):
 
 def result_to_dict(row):
     """Convert an internal result tuple to a serializable dict."""
-    session_id, source, file_path, project, slug, timestamp, excerpt, rank = row
-    parent_session_id = subagent_parent_session_id(file_path)
+    session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary = row
+    parent_sid = subagent_parent_session_id(file_path)
     return {
         "session_id": session_id,
         "source": source,
@@ -106,10 +114,11 @@ def result_to_dict(row):
         "slug": slug,
         "timestamp": timestamp,
         "date": format_timestamp(timestamp),
+        "summary": summary or "",
         "excerpt": make_excerpt(excerpt) if excerpt else "",
         "rank": rank,
-        "is_subagent": bool(parent_session_id),
-        "parent_session_id": parent_session_id,
+        "is_subagent": bool(parent_sid),
+        "parent_session_id": parent_sid or "",
     }
 
 
@@ -168,6 +177,51 @@ def make_excerpt(text, needle=None, max_len=200):
     return clean[:max_len] + ("..." if len(clean) > max_len else "")
 
 
+def infer_project_from_path(file_path):
+    """Infer project path from Claude session file path.
+
+    e.g. ~/.claude/projects/-Users-admin-work/SESSION.jsonl -> /Users/admin/work
+    """
+    match = CLAUDE_PROJECT_DIR_RE.search(file_path or "")
+    if not match:
+        return ""
+    encoded = match.group(1)  # e.g. "-Users-admin-work"
+    # Replace leading dash and internal dashes with /
+    return "/" + encoded.lstrip("-").replace("-", "/")
+
+
+def sanitize_fts_query(query):
+    """Make a user query safe for FTS5.
+
+    Wraps tokens containing special characters in double quotes to prevent
+    FTS syntax errors (e.g. "local-command-caveat" has a dash which FTS5
+    interprets as NOT).
+    """
+    if not query:
+        return query
+    # If user explicitly used FTS operators, trust them
+    if FTS_SPECIAL_QUERY_RE.search(query):
+        return query
+    # Check if any token has operator chars that need quoting
+    tokens = query.split()
+    needs_quoting = False
+    for token in tokens:
+        if any(c in FTS_OPERATOR_CHARS for c in token):
+            needs_quoting = True
+            break
+    if not needs_quoting:
+        return query
+    # Quote each token that contains special chars
+    safe_tokens = []
+    for token in tokens:
+        if any(c in FTS_OPERATOR_CHARS for c in token):
+            # Escape any existing double quotes inside the token
+            safe_tokens.append('"' + token.replace('"', '""') + '"')
+        else:
+            safe_tokens.append(token)
+    return " ".join(safe_tokens)
+
+
 def project_match_clause(project, alias):
     """Build SQL clause+params to match an exact project or its child paths."""
     normalized = (project or "").rstrip("/")
@@ -187,6 +241,7 @@ def parse_claude_session(path):
     project = None
     slug = None
     earliest_ts = None
+    summary = ""
     messages = []
 
     try:
@@ -241,8 +296,18 @@ def parse_claude_session(path):
                     content = entry.get("content", "")
 
                 text = extract_text(content)
-                if text:
-                    messages.append((role, text))
+                if not text:
+                    continue
+
+                # Filter noise (same as Codex parser)
+                if is_noise(text):
+                    continue
+
+                messages.append((role, text))
+
+                # Capture first meaningful user message as summary
+                if not summary and role == "user":
+                    summary = text.replace("\n", " ").strip()[:120]
 
     except (OSError, PermissionError) as e:
         print(f"Warning: skipping {path}: {e}", file=sys.stderr)
@@ -251,6 +316,13 @@ def parse_claude_session(path):
     if not slug:
         slug = session_id[:12]
 
+    # Infer project from file path if cwd was not found
+    if not project:
+        project = infer_project_from_path(path)
+
+    # Detect subagent
+    parent_sid = subagent_parent_session_id(path)
+
     metadata = {
         "session_id": session_id,
         "source": "claude",
@@ -258,6 +330,9 @@ def parse_claude_session(path):
         "project": project or "",
         "slug": slug,
         "timestamp": earliest_ts,
+        "summary": summary,
+        "is_subagent": 1 if parent_sid else 0,
+        "parent_session_id": parent_sid or "",
     }
     return metadata, messages
 
@@ -276,6 +351,7 @@ def parse_codex_session(path):
     project = None
     slug = None
     earliest_ts = None
+    summary = ""
     messages = []
 
     # Extract date from path: sessions/YYYY/MM/DD/rollout-...
@@ -362,10 +438,14 @@ def parse_codex_session(path):
                 # Skip system/instruction blocks injected as user messages
                 if not text:
                     continue
-                if any(marker in text for marker in SKIP_MARKERS):
+                if is_noise(text):
                     continue
 
                 messages.append((role, text))
+
+                # Capture first meaningful user message as summary
+                if not summary and role == "user":
+                    summary = text.replace("\n", " ").strip()[:120]
 
     except (OSError, PermissionError) as e:
         print(f"Warning: skipping {path}: {e}", file=sys.stderr)
@@ -382,14 +462,19 @@ def parse_codex_session(path):
         "project": project or "",
         "slug": slug,
         "timestamp": earliest_ts,
+        "summary": summary,
+        "is_subagent": 0,
+        "parent_session_id": "",
     }
     return metadata, messages
 
 
-def build_session_constraints(project=None, days=None, source=None, alias="s2"):
+def build_session_constraints(project=None, days=None, source=None, alias="s2", include_subagents=False):
     """Build session-level SQL filter clauses and parameter list."""
     conds = []
     params = []
+    if not include_subagents:
+        conds.append(f"{alias}.is_subagent = 0")
     if project:
         project_clause, project_params = project_match_clause(project, alias)
         conds.append(project_clause)
@@ -497,9 +582,11 @@ def index_sessions(conn, force=False):
         session_timestamp = metadata["timestamp"] if metadata["timestamp"] else int(mtime * 1000)
 
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (session_id, source, file_path, project, slug, timestamp, mtime) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions (session_id, source, file_path, project, slug, timestamp, mtime, summary, is_subagent, parent_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (metadata["session_id"], metadata["source"], metadata["file_path"],
-             metadata["project"], metadata["slug"], session_timestamp, mtime),
+             metadata["project"], metadata["slug"], session_timestamp, mtime,
+             metadata.get("summary", ""), metadata.get("is_subagent", 0),
+             metadata.get("parent_session_id", "")),
         )
 
         conn.executemany(
@@ -523,34 +610,39 @@ def index_sessions(conn, force=False):
 
 # — Search —————————————————————————————————————————————————————————————————
 
-def list_sessions(conn, project=None, days=None, source=None, limit=10, query=None):
+def list_sessions(conn, project=None, days=None, source=None, limit=10, query=None,
+                   include_subagents=False, offset=0):
     """List sessions ordered by recency, optionally filtered by a text query."""
-    conds, params = build_session_constraints(project=project, days=days, source=source, alias="s")
+    conds, params = build_session_constraints(
+        project=project, days=days, source=source, alias="s",
+        include_subagents=include_subagents,
+    )
 
     if not query:
-        sql = "SELECT session_id, source, file_path, project, slug, timestamp FROM sessions s"
+        sql = "SELECT session_id, source, file_path, project, slug, timestamp, summary FROM sessions s"
         if conds:
             sql += " WHERE " + " AND ".join(conds)
-        sql += " ORDER BY timestamp DESC, session_id DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY timestamp DESC, session_id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = conn.execute(sql, params).fetchall()
-        return [(sid, src, fpath, proj, slug, ts, "", 0.0) for sid, src, fpath, proj, slug, ts in rows]
+        return [(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows]
 
     # Query-filtered list mode: match text, then sort by recency.
-    query_sql = "SELECT s.session_id, s.source, s.file_path, s.project, s.slug, s.timestamp FROM sessions s WHERE "
+    safe_query = sanitize_fts_query(query)
+    query_sql = "SELECT s.session_id, s.source, s.file_path, s.project, s.slug, s.timestamp, s.summary FROM sessions s WHERE "
     if conds:
         query_sql += " AND ".join(conds) + " AND "
     query_sql += "s.session_id IN (SELECT session_id FROM messages WHERE messages MATCH ?) "
-    query_sql += "ORDER BY s.timestamp DESC, s.session_id DESC LIMIT ?"
+    query_sql += "ORDER BY s.timestamp DESC, s.session_id DESC LIMIT ? OFFSET ?"
 
-    query_params = params + [query, limit]
+    query_params = params + [safe_query, limit, offset]
     try:
         rows = conn.execute(query_sql, query_params).fetchall()
     except sqlite3.OperationalError as e:
         print(f"List query error: {e}", file=sys.stderr)
         rows = []
 
-    results = [(sid, src, fpath, proj, slug, ts, "", 0.0) for sid, src, fpath, proj, slug, ts in rows]
+    results = [(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows]
     if results:
         return results
 
@@ -563,12 +655,14 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
             days=days,
             source=source,
             limit=limit,
+            include_subagents=include_subagents,
             preserve_sql_order=True,
         )
     return results
 
 
-def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10, preserve_sql_order=False):
+def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10,
+                        include_subagents=False, preserve_sql_order=False):
     """Fallback search for simple CJK queries using escaped substring matching."""
     terms = extract_cjk_terms(query)
     if not terms:
@@ -576,7 +670,10 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
 
     like_conds = ["m.text LIKE ? ESCAPE '\\'" for _ in terms]
     like_params = [f"%{escape_like(term)}%" for term in terms]
-    session_conds, session_params = build_session_constraints(project=project, days=days, source=source, alias="s")
+    session_conds, session_params = build_session_constraints(
+        project=project, days=days, source=source, alias="s",
+        include_subagents=include_subagents,
+    )
     session_filter = ""
     if session_conds:
         session_filter = " AND " + " AND ".join(session_conds)
@@ -584,7 +681,7 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
     candidate_limit = limit * 3
     sql = f"""
         SELECT m.session_id, MAX(m.rowid) as match_rowid,
-               s.source, s.file_path, s.project, s.slug, s.timestamp
+               s.source, s.file_path, s.project, s.slug, s.timestamp, s.summary
         FROM messages m
         JOIN sessions s ON s.session_id = m.session_id
         WHERE {' AND '.join(like_conds)}{session_filter}
@@ -603,7 +700,7 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
     results = []
     now_ms = time.time() * 1000
     highlight_term = terms[0]
-    for session_id, rowid, src, file_path, project_value, slug, timestamp in matched:
+    for session_id, rowid, src, file_path, project_value, slug, timestamp, summary in matched:
         text_row = conn.execute("SELECT text FROM messages WHERE rowid = ?", (rowid,)).fetchone()
         excerpt = make_excerpt(text_row[0] if text_row else "", highlight_term)
 
@@ -615,21 +712,65 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
 
         # Keep FTS-ranked results ahead of fallback results; use recency within fallback set.
         blended_rank = 1.0 - 0.2 * recency_boost
-        results.append((session_id, src, file_path, project_value, slug, timestamp, excerpt, blended_rank))
+        results.append((session_id, src, file_path, project_value, slug, timestamp, excerpt, blended_rank, summary or ""))
 
     if not preserve_sql_order:
         results.sort(key=lambda r: r[7])
     return results[:limit]
 
 
-def search(conn, query, project=None, days=None, source=None, limit=10):
+def search_like_fallback(conn, query, project=None, days=None, source=None, limit=10,
+                         include_subagents=False):
+    """Fallback search using LIKE when FTS query fails (e.g. special characters)."""
+    escaped = escape_like(query)
+    session_conds, session_params = build_session_constraints(
+        project=project, days=days, source=source, alias="s",
+        include_subagents=include_subagents,
+    )
+    session_filter = ""
+    if session_conds:
+        session_filter = " AND " + " AND ".join(session_conds)
+
+    sql = f"""
+        SELECT m.session_id, MAX(m.rowid) as match_rowid,
+               s.source, s.file_path, s.project, s.slug, s.timestamp, s.summary
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        WHERE m.text LIKE ? ESCAPE '\\'{session_filter}
+        GROUP BY m.session_id
+        ORDER BY s.timestamp DESC, match_rowid DESC
+        LIMIT ?
+    """
+    params = [f"%{escaped}%"] + session_params + [limit]
+
+    try:
+        matched = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as e:
+        print(f"LIKE fallback search error: {e}", file=sys.stderr)
+        return []
+
+    results = []
+    for session_id, rowid, src, file_path, project_value, slug_val, timestamp, summary in matched:
+        text_row = conn.execute("SELECT text FROM messages WHERE rowid = ?", (rowid,)).fetchone()
+        excerpt = make_excerpt(text_row[0] if text_row else "", query)
+        results.append((session_id, src, file_path, project_value, slug_val, timestamp, excerpt, 0.0, summary or ""))
+
+    return results
+
+
+def search(conn, query, project=None, days=None, source=None, limit=10, include_subagents=False):
     """Search indexed sessions."""
+    safe_query = sanitize_fts_query(query)
+
     # FTS5 auxiliary functions (bm25, snippet) don't work with GROUP BY.
     # Use a subquery to get the best-ranking rowid per session, then fetch snippets.
-    fts_params = [query]
+    fts_params = [safe_query]
     session_filter = ""
 
-    subconds, subparams = build_session_constraints(project=project, days=days, source=source, alias="s2")
+    subconds, subparams = build_session_constraints(
+        project=project, days=days, source=source, alias="s2",
+        include_subagents=include_subagents,
+    )
     if subconds:
         session_filter = (
             " AND session_id IN "
@@ -657,15 +798,18 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
         # Two-pass: first get sessions+ranks, then fetch snippets individually
         ranked = conn.execute(inner_sql, fts_params).fetchall()
     except sqlite3.OperationalError as e:
-        print(f"Search error: {e}", file=sys.stderr)
-        return []
+        print(f"FTS search error, falling back to LIKE: {e}", file=sys.stderr)
+        return search_like_fallback(
+            conn, query, project=project, days=days, source=source,
+            limit=limit, include_subagents=include_subagents,
+        )
 
     results = []
     now_ms = time.time() * 1000
     for session_id, rank in ranked:
         # Get session metadata
         meta = conn.execute(
-            "SELECT source, file_path, project, slug, timestamp FROM sessions WHERE session_id = ?",
+            "SELECT source, file_path, project, slug, timestamp, summary FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if not meta:
@@ -674,7 +818,7 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
         # Get snippet from the best-matching row
         snippet_row = conn.execute(
             "SELECT snippet(messages, 2, '**', '**', '...', 20) FROM messages WHERE messages MATCH ? AND session_id = ? LIMIT 1",
-            (query, session_id),
+            (safe_query, session_id),
         ).fetchone()
         excerpt = snippet_row[0] if snippet_row else ""
 
@@ -690,20 +834,21 @@ def search(conn, query, project=None, days=None, source=None, limit=10):
         # Blend: 80% BM25, 20% recency. Recency term scales with typical BM25 magnitude.
         blended_rank = rank * (1 - 0.2 * recency_boost)
 
-        results.append((session_id, meta[0], meta[1], meta[2], meta[3], meta[4], excerpt, blended_rank))
+        results.append((session_id, meta[0], meta[1], meta[2], meta[3], meta[4], excerpt, blended_rank, meta[5] or ""))
 
     # Re-sort by blended rank and trim to requested limit.
     results.sort(key=lambda r: r[7])
     return results[:limit]
 
 
-def format_timestamp(ts_ms):
+def format_timestamp(ts_ms, precise=False):
     """Format millisecond timestamp to date string."""
     if not ts_ms:
         return "unknown"
     try:
         ts = float(ts_ms) / 1000  # epoch ms to seconds
-        return time.strftime("%Y-%m-%d", time.localtime(ts))
+        fmt = "%Y-%m-%d %H:%M" if precise else "%Y-%m-%d"
+        return time.strftime(fmt, time.localtime(ts))
     except (OSError, ValueError, TypeError):
         return "unknown"
 
@@ -716,12 +861,16 @@ def main():
     parser.add_argument("--days", type=int, help="Only sessions from last N days")
     parser.add_argument("--source", choices=["claude", "codex"], help="Filter by source (claude or codex)")
     parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    parser.add_argument("--offset", type=int, default=0, help="Skip first N results (for pagination)")
+    parser.add_argument("--include-subagents", action="store_true", help="Include subagent sessions in results")
     parser.add_argument("--reindex", action="store_true", help="Force full rebuild of the index")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
 
     args = parser.parse_args()
     if not args.list and not args.query:
         parser.error("QUERY is required unless --list is used")
+
+    inc_sub = args.include_subagents
 
     migrate_db_location()
     new_db = not DB_PATH.exists()
@@ -760,9 +909,14 @@ def main():
             source=args.source,
             limit=args.limit,
             query=args.query,
+            include_subagents=inc_sub,
+            offset=args.offset,
         )
     else:
-        results = search(conn, args.query, project=args.project, days=args.days, source=args.source, limit=args.limit)
+        results = search(
+            conn, args.query, project=args.project, days=args.days,
+            source=args.source, limit=args.limit, include_subagents=inc_sub,
+        )
 
         # For simple Chinese queries, augment sparse FTS results with substring fallback.
         if contains_cjk(args.query) and is_simple_query(args.query) and len(results) < args.limit:
@@ -773,6 +927,7 @@ def main():
                 days=args.days,
                 source=args.source,
                 limit=args.limit,
+                include_subagents=inc_sub,
             )
             existing_ids = {row[0] for row in results}
             for row in fallback:
@@ -791,11 +946,10 @@ def main():
                     "days": args.days,
                     "source": args.source,
                     "limit": args.limit,
+                    "offset": args.offset,
+                    "include_subagents": inc_sub,
                 },
                 "index": {
-                    "indexed": indexed,
-                    "skipped": skipped,
-                    "orphaned": orphaned,
                     "total_sessions": total_sessions,
                     "total_messages": total_messages,
                 },
@@ -816,11 +970,10 @@ def main():
                 "days": args.days,
                 "source": args.source,
                 "limit": args.limit,
+                "offset": args.offset,
+                "include_subagents": inc_sub,
             },
             "index": {
-                "indexed": indexed,
-                "skipped": skipped,
-                "orphaned": orphaned,
                 "total_sessions": total_sessions,
                 "total_messages": total_messages,
             },
@@ -833,18 +986,20 @@ def main():
     verb = "Listed" if args.list else "Found"
     print(f"{verb} {len(results)} sessions (index: {total_sessions} sessions, {total_messages} messages):\n")
 
-    for i, (session_id, source, file_path, project, slug, timestamp, excerpt, rank) in enumerate(results, 1):
-        date = format_timestamp(timestamp)
+    for i, (session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary) in enumerate(results, 1):
+        date = format_timestamp(timestamp, precise=True)
         src_tag = f"[{source}]" if source else ""
-        parent_session_id = subagent_parent_session_id(file_path)
-        subagent_tag = f" [subagent of {parent_session_id}]" if parent_session_id else ""
+        parent_sid = subagent_parent_session_id(file_path)
+        subagent_tag = f" [subagent of {parent_sid}]" if parent_sid else ""
         proj_name = Path(project).name if project else "unknown"
-        print(f"[{i}] {date} | {slug} | {proj_name} {src_tag}{subagent_tag}")
+        print(f"[{i}] {date} | {proj_name} {src_tag}{subagent_tag}")
+        if summary:
+            print(f"    {summary}")
         if project:
-            print(f"    {project}")
+            print(f"    Project: {project}")
         print(f"    ID: {session_id}")
-        if parent_session_id:
-            print(f"    Parent Session: {parent_session_id}")
+        if parent_sid:
+            print(f"    Parent: {parent_sid}")
         if file_path:
             print(f"    File: {file_path}")
         if excerpt:
