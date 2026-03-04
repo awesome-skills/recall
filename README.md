@@ -16,14 +16,15 @@
 ~/.claude/projects/**/*.jsonl ─┐
                                 ├──▶ Index ──▶ ~/.recall.db
 ~/.codex/sessions/**/*.jsonl ──┘       │
-                                       ├─ incremental (mtime)
+                                       ├─ dir-level mtime checkpoint
+                                       ├─ incremental per-file mtime
                                        ├─ orphan cleanup
-                                       └─ timestamp backfill
+                                       └─ summary extraction
                                               │
 Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶ results
-              │                          (30-day half-life)
-         Porter stemming
-         + unicode61
+              │               │          (30-day half-life)
+         Porter stemming   CJK fallback
+         + unicode61       + LIKE fallback
 ```
 
 </div>
@@ -39,7 +40,7 @@ A skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [C
 ### Install
 
 ```bash
-npx skills add arjunkmrm/recall
+npx skills add awesome-skills/recall
 ```
 
 Restart your agent, then use `/recall` or ask naturally:
@@ -52,7 +53,7 @@ Restart your agent, then use `/recall` or ask naturally:
 # Search across all sessions
 recall.py "WebSocket reconnect"
 
-# Browse recent sessions
+# Browse recent sessions (with one-line summaries)
 recall.py --list
 
 # List + filter by keyword (sorted by recency)
@@ -60,6 +61,12 @@ recall.py --list "database migration"
 
 # Combine filters
 recall.py "auth bug" --source claude --project ~/work/api --days 7
+
+# Paginate results
+recall.py --list --limit 10 --offset 10
+
+# Include subagent sessions (hidden by default)
+recall.py --list --include-subagents
 
 # Machine-readable output
 recall.py --json "deploy"
@@ -79,6 +86,8 @@ Queries use [FTS5 full-text query syntax](https://www.sqlite.org/fts5.html#full_
 | Combined | `"error handling" AND retry` | Mix any of the above |
 
 > **CJK support** — Chinese / Japanese / Korean queries automatically fall back to substring matching when FTS recall is sparse.
+
+> **Query tolerance** — Tokens with special characters (e.g. `local-command-caveat`) are auto-quoted. If FTS fails entirely, results fall back to LIKE substring search.
 
 ### Resume a session
 
@@ -105,16 +114,18 @@ read_session.py /path/to/session.jsonl --pretty    # human-readable
 recall.py [QUERY] [OPTIONS]
 
 Positional:
-  QUERY                   FTS5 search query (optional with --list)
+  QUERY                     FTS5 search query (optional with --list)
 
 Options:
-  --list                  List sessions by recency; QUERY filters the list
-  --project PATH          Match exact project path or child paths
-  --days N                Only sessions from the last N days
-  --source claude|codex   Filter by source
-  --limit N               Max results (default: 10)
-  --json                  Machine-readable JSON output
-  --reindex               Force full index rebuild
+  --list                    List sessions by recency; QUERY filters the list
+  --project PATH            Match exact project path or child paths
+  --days N                  Only sessions from the last N days
+  --source claude|codex     Filter by source
+  --limit N                 Max results (default: 10)
+  --offset N                Skip first N results (for pagination)
+  --include-subagents       Include subagent sessions in results
+  --json                    Machine-readable JSON output
+  --reindex                 Force full index rebuild
 ```
 
 ### Under the hood
@@ -122,12 +133,14 @@ Options:
 | Aspect | Detail |
 |:-------|:-------|
 | **Storage** | `~/.recall.db` — SQLite FTS5 + WAL, permissions `0600` |
-| **Indexing** | Incremental via mtime; first run ~7 s for 2 000 sessions |
+| **Indexing** | Two-level: dir mtime checkpoint skips unchanged dirs, then per-file mtime |
 | **Ranking** | BM25 (80%) + recency boost (20%, 30-day half-life) |
-| **Content** | User & assistant text only — skips tools, thinking, images |
-| **Subagents** | Indexed and tagged with parent session ID |
+| **Content** | User & assistant text only — system noise, tools, thinking, images filtered |
+| **Summaries** | First meaningful user message stored per session, shown in `--list` and search |
+| **Subagents** | Indexed with parent session ID; hidden by default, `--include-subagents` to show |
 | **Dependencies** | Zero — Python 3.9+ stdlib only |
 | **Migration** | Auto-migrates from legacy `~/.claude/recall.db` |
+| **Tests** | 66 regression tests (unittest) |
 
 ---
 
@@ -140,7 +153,7 @@ Options:
 ### 安装
 
 ```bash
-npx skills add arjunkmrm/recall
+npx skills add awesome-skills/recall
 ```
 
 重启 agent 后使用 `/recall`，或者直接自然语言提问：
@@ -153,7 +166,7 @@ npx skills add arjunkmrm/recall
 # 全文搜索
 recall.py "WebSocket 重连"
 
-# 浏览最近的会话
+# 浏览最近的会话（含一行摘要）
 recall.py --list
 
 # 列出 + 关键词过滤（按时间倒序）
@@ -161,6 +174,12 @@ recall.py --list "数据库迁移"
 
 # 组合过滤条件
 recall.py "认证 bug" --source claude --project ~/work/api --days 7
+
+# 翻页
+recall.py --list --limit 10 --offset 10
+
+# 显示子代理会话（默认隐藏）
+recall.py --list --include-subagents
 
 # 输出 JSON（方便脚本消费）
 recall.py --json "部署"
@@ -180,6 +199,8 @@ recall.py --json "部署"
 | 组合 | `"error handling" AND retry` | 以上任意组合 |
 
 > **中日韩支持** — 当 FTS 召回率不足时，中文 / 日文 / 韩文查询会自动回退到子串匹配。
+
+> **查询容错** — 含特殊字符的词（如 `local-command-caveat`）会自动加引号；FTS 完全失败时回退到 LIKE 子串搜索。
 
 ### 恢复会话
 
@@ -206,16 +227,18 @@ read_session.py /path/to/session.jsonl --pretty    # 可读格式
 recall.py [QUERY] [选项]
 
 位置参数:
-  QUERY                   FTS5 搜索词（--list 模式下可选）
+  QUERY                     FTS5 搜索词（--list 模式下可选）
 
 选项:
-  --list                  按时间列出会话；可选 QUERY 过滤
-  --project PATH          精确匹配项目路径或其子路径
-  --days N                仅显示最近 N 天的会话
-  --source claude|codex   按来源过滤
-  --limit N               最大结果数（默认: 10）
-  --json                  输出机器可读的 JSON
-  --reindex               强制重建索引
+  --list                    按时间列出会话；可选 QUERY 过滤
+  --project PATH            精确匹配项目路径或其子路径
+  --days N                  仅显示最近 N 天的会话
+  --source claude|codex     按来源过滤
+  --limit N                 最大结果数（默认: 10）
+  --offset N                跳过前 N 条结果（翻页）
+  --include-subagents       显示子代理会话
+  --json                    输出机器可读的 JSON
+  --reindex                 强制重建索引
 ```
 
 ### 技术细节
@@ -223,12 +246,14 @@ recall.py [QUERY] [选项]
 | 项目 | 说明 |
 |:-----|:-----|
 | **存储** | `~/.recall.db` — SQLite FTS5 + WAL 模式，权限 `0600` |
-| **索引** | 基于 mtime 增量更新；首次 ~7 秒 / 2000 个会话 |
+| **索引** | 两级：目录 mtime 检查点跳过未变更目录，再按文件 mtime 增量更新 |
 | **排序** | BM25（80%）+ 时间衰减（20%，30 天半衰期） |
-| **内容** | 仅索引用户和助手的文本 — 跳过工具调用、思考过程、图片 |
-| **子代理** | 会被索引并标注父会话 ID |
+| **内容** | 仅索引用户和助手的文本 — 过滤系统噪音、工具调用、思考过程、图片 |
+| **摘要** | 每个会话存储首条有意义的用户消息，在 `--list` 和搜索结果中展示 |
+| **子代理** | 索引并标注父会话 ID；默认隐藏，`--include-subagents` 显示 |
 | **依赖** | 零依赖 — 仅使用 Python 3.9+ 标准库 |
 | **迁移** | 自动从旧路径 `~/.claude/recall.db` 迁移 |
+| **测试** | 66 个回归测试（unittest） |
 
 ---
 
@@ -240,6 +265,6 @@ Found a bug or have an idea? / 发现 bug 或有新想法？
 
 [Open an issue](https://github.com/awesome-skills/recall/issues) · [Submit a PR](https://github.com/awesome-skills/recall/pulls)
 
-[MIT License](LICENSE)
+Forked from [arjunkmrm/recall](https://github.com/arjunkmrm/recall) · [MIT License](LICENSE)
 
 </div>
