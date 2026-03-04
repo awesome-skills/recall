@@ -17,9 +17,20 @@
 - On FTS query failure, fall back to LIKE substring search instead of returning empty results
 - Apply same `is_noise()` filtering to Claude parser (was Codex-only); filters `<local-command-caveat>`, `<system-reminder>`, `<command-name>`, etc.
 
+### Display
+- Deduplicate slugs: append short session_id suffix when multiple results share the same slug
+- Show `Slug:` line in output when slug differs from session_id
+
 ### Data quality
 - Infer project path from Claude file path when `cwd` is missing (e.g. `-Users-admin-work` → `/Users/admin/work`)
 - Add `--offset` for result pagination
+
+### Performance
+- Directory-level mtime checkpoint (`dir_checkpoints` table) to skip unchanged directories during indexing
+- `os.walk` replaces recursive `glob` — only files in changed directories are stat'd
+
+### Tests
+- Add 66-test regression suite covering query sanitization, project matching, CJK fallback, orphan cleanup, subagent filtering, slug deduplication, directory checkpoints, noise filtering, schema migration
 
 ### Previous (carried from earlier PRs)
 - Add `--list` mode to list sessions by recency without a full-text query

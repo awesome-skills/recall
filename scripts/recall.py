@@ -41,6 +41,11 @@ def create_schema(conn):
             parent_session_id TEXT DEFAULT ''
         );
 
+        CREATE TABLE IF NOT EXISTS dir_checkpoints (
+            dir_path TEXT PRIMARY KEY,
+            mtime REAL
+        );
+
         CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(
             session_id UNINDEXED,
             role,
@@ -102,7 +107,29 @@ def subagent_parent_session_id(file_path):
     return match.group(1) if match else None
 
 
-def result_to_dict(row):
+def deduplicate_slugs(results):
+    """Return a mapping of session_id -> display_slug with suffixes for duplicates.
+
+    When multiple results share the same slug, append a short session_id suffix
+    (last 8 chars) to make them visually distinct.
+    """
+    slug_counts = {}
+    for row in results:
+        slug = row[4] or ""
+        slug_counts[slug] = slug_counts.get(slug, 0) + 1
+
+    display_slugs = {}
+    for row in results:
+        session_id, slug = row[0], row[4] or ""
+        if slug_counts.get(slug, 1) > 1:
+            suffix = session_id[-8:] if len(session_id) >= 8 else session_id
+            display_slugs[session_id] = f"{slug}-{suffix}"
+        else:
+            display_slugs[session_id] = slug
+    return display_slugs
+
+
+def result_to_dict(row, display_slug=None):
     """Convert an internal result tuple to a serializable dict."""
     session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary = row
     parent_sid = subagent_parent_session_id(file_path)
@@ -111,7 +138,7 @@ def result_to_dict(row):
         "source": source,
         "file_path": file_path,
         "project": project,
-        "slug": slug,
+        "slug": display_slug or slug,
         "timestamp": timestamp,
         "date": format_timestamp(timestamp),
         "summary": summary or "",
@@ -506,12 +533,63 @@ def prune_orphan_sessions(conn):
 
 # — Indexing ———————————————————————————————————————————————————————————————
 
+def _collect_files_with_dir_checkpoint(conn, base_dir, source, force=False):
+    """Walk directories under base_dir, skipping unchanged ones via dir_checkpoints.
+
+    Returns list of (file_path, source) for files in new/changed directories,
+    and updates dir_checkpoints for visited directories.
+    """
+    if not base_dir.is_dir():
+        return []
+
+    # Load existing directory checkpoints
+    dir_mtimes = {}
+    if not force:
+        try:
+            prefix = str(base_dir)
+            for row in conn.execute(
+                "SELECT dir_path, mtime FROM dir_checkpoints WHERE dir_path LIKE ? ESCAPE '\\'",
+                [escape_like(prefix) + "%"],
+            ):
+                dir_mtimes[row[0]] = row[1]
+        except sqlite3.OperationalError:
+            pass
+
+    files = []
+    updated_dirs = []
+    for dirpath, dirnames, filenames in os.walk(str(base_dir)):
+        try:
+            current_mtime = os.path.getmtime(dirpath)
+        except OSError:
+            continue
+
+        # Skip directory if mtime unchanged (no files added/removed)
+        if not force and dirpath in dir_mtimes and dir_mtimes[dirpath] == current_mtime:
+            continue
+
+        updated_dirs.append((dirpath, current_mtime))
+
+        for fname in filenames:
+            if fname.endswith(".jsonl"):
+                files.append((os.path.join(dirpath, fname), source))
+
+    # Update checkpoints for changed directories
+    if updated_dirs:
+        conn.executemany(
+            "INSERT OR REPLACE INTO dir_checkpoints (dir_path, mtime) VALUES (?, ?)",
+            updated_dirs,
+        )
+
+    return files
+
+
 def index_sessions(conn, force=False):
     """Scan and index new/changed session files from all sources."""
     if force:
         conn.executescript("""
             DELETE FROM sessions;
             DELETE FROM messages;
+            DELETE FROM dir_checkpoints;
         """)
 
     orphaned = 0
@@ -526,18 +604,10 @@ def index_sessions(conn, force=False):
     except sqlite3.OperationalError:
         pass
 
-    # Collect files from both sources
+    # Collect files from changed directories only (fast path)
     sources = []
-
-    # Claude Code: ~/.claude/projects/**/*.jsonl
-    claude_pattern = str(CLAUDE_PROJECTS_DIR / "**" / "*.jsonl")
-    for fpath in glob(claude_pattern, recursive=True):
-        sources.append((fpath, "claude"))
-
-    # Codex: ~/.codex/sessions/**/*.jsonl
-    codex_pattern = str(CODEX_SESSIONS_DIR / "**" / "*.jsonl")
-    for fpath in glob(codex_pattern, recursive=True):
-        sources.append((fpath, "codex"))
+    sources.extend(_collect_files_with_dir_checkpoint(conn, CLAUDE_PROJECTS_DIR, "claude", force))
+    sources.extend(_collect_files_with_dir_checkpoint(conn, CODEX_SESSIONS_DIR, "codex", force))
 
     indexed = 0
     skipped = 0
@@ -961,6 +1031,9 @@ def main():
         conn.close()
         return
 
+    # Deduplicate slugs across results
+    display_slugs = deduplicate_slugs(results)
+
     if args.json:
         payload = {
             "mode": "list" if args.list else "search",
@@ -977,7 +1050,7 @@ def main():
                 "total_sessions": total_sessions,
                 "total_messages": total_messages,
             },
-            "results": [result_to_dict(row) for row in results],
+            "results": [result_to_dict(row, display_slugs.get(row[0])) for row in results],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         conn.close()
@@ -992,12 +1065,15 @@ def main():
         parent_sid = subagent_parent_session_id(file_path)
         subagent_tag = f" [subagent of {parent_sid}]" if parent_sid else ""
         proj_name = Path(project).name if project else "unknown"
+        display_slug = display_slugs.get(session_id, slug)
         print(f"[{i}] {date} | {proj_name} {src_tag}{subagent_tag}")
         if summary:
             print(f"    {summary}")
         if project:
             print(f"    Project: {project}")
         print(f"    ID: {session_id}")
+        if display_slug and display_slug != session_id:
+            print(f"    Slug: {display_slug}")
         if parent_sid:
             print(f"    Parent: {parent_sid}")
         if file_path:
