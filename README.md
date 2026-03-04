@@ -1,6 +1,8 @@
 # recall
 
-Ever lost a conversation session with Claude Code or Codex and wish you could resume it? This skill lets Claude and your agents search across all your past conversations with full-text search. Builds a SQLite FTS5 index over `~/.claude/projects/` and `~/.codex/sessions/` with BM25 ranking, recency-aware results, and incremental updates.
+Search and resume past [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/) conversations — right from your terminal.
+
+Builds a local SQLite FTS5 full-text index over all your session transcripts, so you can instantly find that conversation from last week where you debugged the auth flow, or the one where you designed the database schema.
 
 ## Install
 
@@ -8,56 +10,120 @@ Ever lost a conversation session with Claude Code or Codex and wish you could re
 npx skills add arjunkmrm/recall
 ```
 
-Then use `/recall` in Claude Code (or Codex) or ask "find a past session where we talked about foo" (you might need to restart Claude Code).
+Restart your agent, then use `/recall` or just ask naturally:
 
-## Usage
+> "find the session where we discussed WebSocket reconnection"
+
+## Quick start
 
 ```bash
-# Full-text search
-python3 scripts/recall.py "state machine"
+# Search across all sessions
+recall.py "WebSocket reconnect"
 
-# List recent sessions (no query required)
-python3 scripts/recall.py --list --limit 20
+# Browse recent sessions
+recall.py --list
 
-# List mode with optional text filter
-python3 scripts/recall.py --list "auth api" --source codex --limit 20
+# List sessions mentioning a topic, sorted by recency
+recall.py --list "database migration"
 
-# Search only Codex sessions from the last 7 days
-python3 scripts/recall.py "mock api" --source codex --days 7
+# Filter by source, project, or time window
+recall.py "auth bug" --source claude --project ~/work/api --days 7
 
-# JSON output for scripts/tooling
-python3 scripts/recall.py --json --source codex --list "auth api"
+# Machine-readable output
+recall.py --json "deploy"
+```
+
+## Search syntax
+
+Queries use [FTS5 syntax](https://www.sqlite.org/fts5.html#full_text_query_syntax):
+
+| Pattern | Example | Matches |
+|---------|---------|---------|
+| Keyword | `websocket` | Stemmed variants (discuss → discussing) |
+| Phrase | `"state machine"` | Exact phrase |
+| Boolean | `rust AND async` | Both terms present |
+| Negation | `auth NOT oauth` | Exclude term |
+| Prefix | `deploy*` | deploy, deployment, deploying... |
+| Combined | `"error handling" AND retry` | Phrase + keyword |
+
+CJK (Chinese/Japanese/Korean) queries automatically fall back to substring matching when FTS recall is sparse.
+
+## Resuming a session
+
+Each result shows the session ID. Use it to pick up where you left off:
+
+```bash
+# Claude Code
+cd /path/to/project
+claude --resume SESSION_ID
+
+# Codex
+cd /path/to/project
+codex resume SESSION_ID
+```
+
+To read a full transcript:
+
+```bash
+read_session.py /path/to/session.jsonl            # JSON output
+read_session.py /path/to/session.jsonl --pretty    # Human-readable
 ```
 
 ## How it works
 
 ```
-  ~/.claude/projects/**/*.jsonl ──┐
-                                  ├─▶ Index ──▶ ~/.recall.db (SQLite FTS5)
-  ~/.codex/sessions/**/*.jsonl ──-┘      │
-                                         │  incremental (mtime-based)
-                                         │
-  Query ──▶ FTS5 Match ──▶ BM25 rank ──▶ Recency boost ──▶ Results
-                │                    [half-life: 30 days]
-                │  [Porter stemming
-                │   phrase/boolean/prefix]
-                ▼
-         snippet extraction
-         highlighted excerpts
+~/.claude/projects/**/*.jsonl ─┐
+                                ├──▶ Index ──▶ ~/.recall.db
+~/.codex/sessions/**/*.jsonl ──┘       │
+                                       ├─ incremental (mtime-based)
+                                       ├─ orphan cleanup
+                                       └─ timestamp backfill
+                                              │
+Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶ results
+              │               │          (30-day half-life,
+              │               │           20% weight)
+              │               │
+         Porter stemming    snippet
+         + unicode61        extraction
 ```
 
-- Indexes user/assistant messages into a SQLite FTS5 database at `~/.recall.db`
-- First run indexes all sessions (a few seconds); subsequent runs only process new/modified files
-- Automatically prunes orphaned DB rows when the backing JSONL file is gone
-- Skips tool_use, tool_result, thinking, and image blocks
-- Results ranked by BM25 with a slight recency bias (recent sessions get up to a 20% boost, decaying with a 30-day half-life)
-- Adds a CJK substring fallback for simple Chinese/Japanese/Korean queries when FTS recall is sparse
-- Supports `--list [QUERY]` to browse recent sessions, with optional text filtering
-- Supports `--json` output for machine-readable downstream processing
-- Marks Claude subagent transcripts as `[subagent of <parent-session-id>]` in text output
-- Results tagged `[claude]` or `[codex]` with highlighted excerpts
-- No dependencies — Python 3.9+ stdlib only (sqlite3, json, argparse)
+**Indexing** — On first run, all `.jsonl` session files are parsed and indexed (a few seconds for thousands of sessions). Subsequent runs are incremental: only new or modified files are re-processed. Orphaned DB rows (deleted source files) are automatically pruned.
+
+**Ranking** — Results are ranked by BM25 relevance with a slight recency bias. Recent sessions get up to a 20% boost that decays exponentially with a 30-day half-life. This keeps results relevant while surfacing fresh conversations.
+
+**What gets indexed** — Only user and assistant message text. Tool calls, tool results, thinking blocks, images, and system instructions are skipped.
+
+**Subagents** — Claude Code subagent transcripts are indexed and tagged with their parent session ID, so you can trace them back to the main conversation.
+
+## CLI reference
+
+```
+recall.py [QUERY] [OPTIONS]
+
+Arguments:
+  QUERY                   Search query (FTS5 syntax); optional with --list
+
+Options:
+  --list                  List sessions by recency; QUERY filters the list
+  --project PATH          Filter to exact project path or child paths
+  --days N                Only sessions from the last N days
+  --source claude|codex   Filter by session source
+  --limit N               Max results (default: 10)
+  --json                  Output machine-readable JSON
+  --reindex               Force full index rebuild
+```
+
+## Details
+
+- **Storage**: `~/.recall.db` (SQLite FTS5 + WAL mode, file permissions `0600`)
+- **Dependencies**: None — Python 3.9+ stdlib only
+- **Auto-migration**: DB moved from legacy `~/.claude/recall.db` on first run
+- **Schema upgrades**: Columns added automatically when upgrading from older versions
 
 ## Contributing
 
-Found a bug or have an idea? [Open an issue](https://github.com/arjunkmrm/recall/issues) or submit a pull request — contributions are welcome!
+Found a bug or have an idea? [Open an issue](https://github.com/awesome-skills/recall/issues) or submit a PR — contributions welcome!
+
+## License
+
+[MIT](LICENSE)
