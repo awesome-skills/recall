@@ -1,20 +1,52 @@
-# recall
+<div align="center">
 
-Search and resume past [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/) conversations — right from your terminal.
+# 🔍 recall
 
-Builds a local SQLite FTS5 full-text index over all your session transcripts, so you can instantly find that conversation from last week where you debugged the auth flow, or the one where you designed the database schema.
+**Search and resume past conversations — right from your terminal.**
 
-## Install
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776ab?logo=python&logoColor=white)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![No Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)]()
+
+[English](#english) · [中文](#中文)
+
+<br>
+
+```
+~/.claude/projects/**/*.jsonl ─┐
+                                ├──▶ Index ──▶ ~/.recall.db
+~/.codex/sessions/**/*.jsonl ──┘       │
+                                       ├─ incremental (mtime)
+                                       ├─ orphan cleanup
+                                       └─ timestamp backfill
+                                              │
+Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶ results
+              │                          (30-day half-life)
+         Porter stemming
+         + unicode61
+```
+
+</div>
+
+---
+
+<a id="english"></a>
+
+## English
+
+A skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/) that builds a local full-text search index over all your past session transcripts. Find any conversation in seconds.
+
+### Install
 
 ```bash
 npx skills add arjunkmrm/recall
 ```
 
-Restart your agent, then use `/recall` or just ask naturally:
+Restart your agent, then use `/recall` or ask naturally:
 
-> "find the session where we discussed WebSocket reconnection"
+> *"find the session where we discussed WebSocket reconnection"*
 
-## Quick start
+### Quick start
 
 ```bash
 # Search across all sessions
@@ -23,107 +55,191 @@ recall.py "WebSocket reconnect"
 # Browse recent sessions
 recall.py --list
 
-# List sessions mentioning a topic, sorted by recency
+# List + filter by keyword (sorted by recency)
 recall.py --list "database migration"
 
-# Filter by source, project, or time window
+# Combine filters
 recall.py "auth bug" --source claude --project ~/work/api --days 7
 
 # Machine-readable output
 recall.py --json "deploy"
 ```
 
-## Search syntax
+### Search syntax
 
-Queries use [FTS5 syntax](https://www.sqlite.org/fts5.html#full_text_query_syntax):
+Queries use [FTS5 full-text query syntax](https://www.sqlite.org/fts5.html#full_text_query_syntax):
 
-| Pattern | Example | Matches |
-|---------|---------|---------|
-| Keyword | `websocket` | Stemmed variants (discuss → discussing) |
+| Pattern | Example | Description |
+|:--------|:--------|:------------|
+| Keyword | `websocket` | Stemmed matching — *discuss* matches *discussing* |
 | Phrase | `"state machine"` | Exact phrase |
-| Boolean | `rust AND async` | Both terms present |
-| Negation | `auth NOT oauth` | Exclude term |
-| Prefix | `deploy*` | deploy, deployment, deploying... |
-| Combined | `"error handling" AND retry` | Phrase + keyword |
+| Boolean | `rust AND async` | Both terms required |
+| Negation | `auth NOT oauth` | Exclude a term |
+| Prefix | `deploy*` | Matches deploy, deployment, deploying… |
+| Combined | `"error handling" AND retry` | Mix any of the above |
 
-CJK (Chinese/Japanese/Korean) queries automatically fall back to substring matching when FTS recall is sparse.
+> **CJK support** — Chinese / Japanese / Korean queries automatically fall back to substring matching when FTS recall is sparse.
 
-## Resuming a session
+### Resume a session
 
-Each result shows the session ID. Use it to pick up where you left off:
+Each result includes a session ID you can use to pick up where you left off:
 
 ```bash
 # Claude Code
-cd /path/to/project
-claude --resume SESSION_ID
+cd /path/to/project && claude --resume SESSION_ID
 
 # Codex
-cd /path/to/project
-codex resume SESSION_ID
+cd /path/to/project && codex resume SESSION_ID
 ```
 
-To read a full transcript:
+Read a full transcript:
 
 ```bash
-read_session.py /path/to/session.jsonl            # JSON output
-read_session.py /path/to/session.jsonl --pretty    # Human-readable
+read_session.py /path/to/session.jsonl            # JSON
+read_session.py /path/to/session.jsonl --pretty    # human-readable
 ```
 
-## How it works
-
-```
-~/.claude/projects/**/*.jsonl ─┐
-                                ├──▶ Index ──▶ ~/.recall.db
-~/.codex/sessions/**/*.jsonl ──┘       │
-                                       ├─ incremental (mtime-based)
-                                       ├─ orphan cleanup
-                                       └─ timestamp backfill
-                                              │
-Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶ results
-              │               │          (30-day half-life,
-              │               │           20% weight)
-              │               │
-         Porter stemming    snippet
-         + unicode61        extraction
-```
-
-**Indexing** — On first run, all `.jsonl` session files are parsed and indexed (a few seconds for thousands of sessions). Subsequent runs are incremental: only new or modified files are re-processed. Orphaned DB rows (deleted source files) are automatically pruned.
-
-**Ranking** — Results are ranked by BM25 relevance with a slight recency bias. Recent sessions get up to a 20% boost that decays exponentially with a 30-day half-life. This keeps results relevant while surfacing fresh conversations.
-
-**What gets indexed** — Only user and assistant message text. Tool calls, tool results, thinking blocks, images, and system instructions are skipped.
-
-**Subagents** — Claude Code subagent transcripts are indexed and tagged with their parent session ID, so you can trace them back to the main conversation.
-
-## CLI reference
+### CLI reference
 
 ```
 recall.py [QUERY] [OPTIONS]
 
-Arguments:
-  QUERY                   Search query (FTS5 syntax); optional with --list
+Positional:
+  QUERY                   FTS5 search query (optional with --list)
 
 Options:
   --list                  List sessions by recency; QUERY filters the list
-  --project PATH          Filter to exact project path or child paths
+  --project PATH          Match exact project path or child paths
   --days N                Only sessions from the last N days
-  --source claude|codex   Filter by session source
+  --source claude|codex   Filter by source
   --limit N               Max results (default: 10)
-  --json                  Output machine-readable JSON
+  --json                  Machine-readable JSON output
   --reindex               Force full index rebuild
 ```
 
-## Details
+### Under the hood
 
-- **Storage**: `~/.recall.db` (SQLite FTS5 + WAL mode, file permissions `0600`)
-- **Dependencies**: None — Python 3.9+ stdlib only
-- **Auto-migration**: DB moved from legacy `~/.claude/recall.db` on first run
-- **Schema upgrades**: Columns added automatically when upgrading from older versions
+| Aspect | Detail |
+|:-------|:-------|
+| **Storage** | `~/.recall.db` — SQLite FTS5 + WAL, permissions `0600` |
+| **Indexing** | Incremental via mtime; first run ~7 s for 2 000 sessions |
+| **Ranking** | BM25 (80%) + recency boost (20%, 30-day half-life) |
+| **Content** | User & assistant text only — skips tools, thinking, images |
+| **Subagents** | Indexed and tagged with parent session ID |
+| **Dependencies** | Zero — Python 3.9+ stdlib only |
+| **Migration** | Auto-migrates from legacy `~/.claude/recall.db` |
 
-## Contributing
+---
 
-Found a bug or have an idea? [Open an issue](https://github.com/awesome-skills/recall/issues) or submit a PR — contributions welcome!
+<a id="中文"></a>
 
-## License
+## 中文
 
-[MIT](LICENSE)
+一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 和 [Codex](https://openai.com/index/codex/) 的 skill，在本地为所有历史会话建立全文搜索索引，几秒内找到任何一段对话。
+
+### 安装
+
+```bash
+npx skills add arjunkmrm/recall
+```
+
+重启 agent 后使用 `/recall`，或者直接自然语言提问：
+
+> *"找一下之前讨论 WebSocket 重连的会话"*
+
+### 快速上手
+
+```bash
+# 全文搜索
+recall.py "WebSocket 重连"
+
+# 浏览最近的会话
+recall.py --list
+
+# 列出 + 关键词过滤（按时间倒序）
+recall.py --list "数据库迁移"
+
+# 组合过滤条件
+recall.py "认证 bug" --source claude --project ~/work/api --days 7
+
+# 输出 JSON（方便脚本消费）
+recall.py --json "部署"
+```
+
+### 搜索语法
+
+使用 [FTS5 全文查询语法](https://www.sqlite.org/fts5.html#full_text_query_syntax)：
+
+| 模式 | 示例 | 说明 |
+|:-----|:-----|:-----|
+| 关键词 | `websocket` | 词干匹配 — *discuss* 可匹配 *discussing* |
+| 短语 | `"state machine"` | 精确短语匹配 |
+| 布尔 | `rust AND async` | 同时包含两个词 |
+| 排除 | `auth NOT oauth` | 排除指定词 |
+| 前缀 | `deploy*` | 匹配 deploy、deployment、deploying… |
+| 组合 | `"error handling" AND retry` | 以上任意组合 |
+
+> **中日韩支持** — 当 FTS 召回率不足时，中文 / 日文 / 韩文查询会自动回退到子串匹配。
+
+### 恢复会话
+
+搜索结果包含 session ID，可以直接恢复：
+
+```bash
+# Claude Code
+cd /path/to/project && claude --resume SESSION_ID
+
+# Codex
+cd /path/to/project && codex resume SESSION_ID
+```
+
+查看完整对话记录：
+
+```bash
+read_session.py /path/to/session.jsonl            # JSON 格式
+read_session.py /path/to/session.jsonl --pretty    # 可读格式
+```
+
+### 命令参考
+
+```
+recall.py [QUERY] [选项]
+
+位置参数:
+  QUERY                   FTS5 搜索词（--list 模式下可选）
+
+选项:
+  --list                  按时间列出会话；可选 QUERY 过滤
+  --project PATH          精确匹配项目路径或其子路径
+  --days N                仅显示最近 N 天的会话
+  --source claude|codex   按来源过滤
+  --limit N               最大结果数（默认: 10）
+  --json                  输出机器可读的 JSON
+  --reindex               强制重建索引
+```
+
+### 技术细节
+
+| 项目 | 说明 |
+|:-----|:-----|
+| **存储** | `~/.recall.db` — SQLite FTS5 + WAL 模式，权限 `0600` |
+| **索引** | 基于 mtime 增量更新；首次 ~7 秒 / 2000 个会话 |
+| **排序** | BM25（80%）+ 时间衰减（20%，30 天半衰期） |
+| **内容** | 仅索引用户和助手的文本 — 跳过工具调用、思考过程、图片 |
+| **子代理** | 会被索引并标注父会话 ID |
+| **依赖** | 零依赖 — 仅使用 Python 3.9+ 标准库 |
+| **迁移** | 自动从旧路径 `~/.claude/recall.db` 迁移 |
+
+---
+
+<div align="center">
+
+### Contributing / 贡献
+
+Found a bug or have an idea? / 发现 bug 或有新想法？
+
+[Open an issue](https://github.com/awesome-skills/recall/issues) · [Submit a PR](https://github.com/awesome-skills/recall/pulls)
+
+[MIT License](LICENSE)
+
+</div>
