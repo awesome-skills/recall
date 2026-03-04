@@ -17,7 +17,7 @@ Search all past Claude Code and Codex sessions using full-text search with BM25 
 ## Usage
 
 ```bash
-python3 <RECALL_SKILL_DIR>/scripts/recall.py [QUERY] [--list] [--project PATH] [--days N] [--source claude|codex] [--limit N] [--reindex] [--json]
+python3 <RECALL_SKILL_DIR>/scripts/recall.py [QUERY] [--list] [--project PATH] [--days N] [--source claude|codex] [--limit N] [--offset N] [--include-subagents] [--reindex] [--json]
 ```
 
 `<RECALL_SKILL_DIR>` varies by installation. Common examples:
@@ -59,6 +59,12 @@ python3 <RECALL_SKILL_DIR>/scripts/recall.py --list "state machine" --limit 20
 
 # Machine-readable JSON output
 python3 <RECALL_SKILL_DIR>/scripts/recall.py --json --source codex --list "auth api"
+
+# Paginate results
+python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --limit 10 --offset 10
+
+# Include subagent sessions (hidden by default)
+python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --include-subagents
 ```
 
 ## Query Syntax (FTS5)
@@ -95,10 +101,12 @@ If results are missing `File:` paths, run `--reindex` to backfill.
 
 - Index is stored at `~/.recall.db` (SQLite FTS5, auto-migrated from `~/.claude/recall.db`)
 - Indexes both `~/.claude/projects/` (Claude Code) and `~/.codex/sessions/` (Codex)
+- Each session shows a one-line summary (first meaningful user message)
+- Subagent sessions are hidden by default; use `--include-subagents` to show them
 - `--project` matches an exact project path or child paths only
+- Queries with special characters (e.g. dashes) are auto-quoted; on FTS error, falls back to LIKE search
 - First run indexes all sessions (a few seconds); subsequent runs are incremental
 - Automatically prunes orphaned DB rows when indexed source files are removed
-- Only user and assistant messages are indexed (tool calls, thinking blocks, state snapshots skipped)
+- Only user and assistant messages are indexed; system noise (`<local-command-caveat>`, `<system-reminder>`, etc.) is filtered
 - Results show `[claude]` or `[codex]` tags to indicate the source
 - For simple CJK queries, adds substring fallback matching to improve recall
-- Claude subagent transcript hits are marked with their parent session ID in text output
