@@ -148,6 +148,74 @@ class TestInferProjectFromPath(unittest.TestCase):
         self.assertEqual(recall.infer_project_from_path(None), "")
 
 
+class TestNormalizeProjectPath(unittest.TestCase):
+
+    def test_trailing_slash_removed(self):
+        self.assertEqual(
+            recall.normalize_project_path("/Users/admin/work/"),
+            "/Users/admin/work",
+        )
+
+    def test_symlink_resolved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_dir = Path(tmpdir) / "real"
+            link_dir = Path(tmpdir) / "link"
+            real_dir.mkdir()
+            os.symlink(real_dir, link_dir)
+            self.assertEqual(
+                recall.normalize_project_path(str(link_dir)),
+                os.path.realpath(str(real_dir)),
+            )
+
+
+class TestResumeCommand(unittest.TestCase):
+
+    def test_claude_resume_command(self):
+        cmd = recall.build_resume_command("claude", "/tmp/my project", "abc-123")
+        self.assertEqual(cmd, "cd '/tmp/my project' && claude --resume abc-123")
+
+    def test_codex_resume_command(self):
+        cmd = recall.build_resume_command("codex", "/tmp/work", "sid")
+        self.assertEqual(cmd, "cd /tmp/work && codex resume sid")
+
+    def test_unknown_source(self):
+        self.assertEqual(recall.build_resume_command("unknown", "/tmp", "sid"), "")
+
+
+class TestResultSerialization(unittest.TestCase):
+
+    def test_summary_truncation_and_resume_command(self):
+        row = (
+            "sid-1234",
+            "codex",
+            "/tmp/file.jsonl",
+            "/tmp/work",
+            "slug",
+            1709510400000,
+            "",
+            0.0,
+            "a" * 40,
+        )
+        result = recall.result_to_dict(row, summary_len=10, include_summary=True)
+        self.assertEqual(result["summary"], "aaaaaaa...")
+        self.assertEqual(result["resume_command"], "cd /tmp/work && codex resume sid-1234")
+
+    def test_summary_disabled(self):
+        row = (
+            "sid-1",
+            "claude",
+            "/tmp/file.jsonl",
+            "/tmp/work",
+            "slug",
+            1709510400000,
+            "",
+            0.0,
+            "hello world",
+        )
+        result = recall.result_to_dict(row, summary_len=20, include_summary=False)
+        self.assertEqual(result["summary"], "")
+
+
 # ── CJK support ──────────────────────────────────────────────────────────────
 
 class TestCJKHelpers(unittest.TestCase):
@@ -612,6 +680,40 @@ class TestDoctorPayload(DBTestCase):
         self.assertEqual(payload["index"]["sessions_by_source"].get("codex"), 1)
         self.assertIn("latest_session_at", payload["index"])
         self.assertIn("latest_indexed_file_mtime", payload["index"])
+
+
+class TestDoctorFixes(DBTestCase):
+
+    def test_fix_indexes_when_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / ".claude" / "projects"
+            codex_dir = Path(tmpdir) / ".codex" / "sessions"
+            claude_dir.mkdir(parents=True)
+            codex_dir.mkdir(parents=True)
+
+            session_path = claude_dir / "sample.jsonl"
+            session_path.write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "role": "user",
+                        "cwd": "/tmp/demo",
+                        "message": {"content": "hello"},
+                        "timestamp": "2026-03-05T10:00:00Z",
+                    }
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(recall, "CLAUDE_PROJECTS_DIR", claude_dir), patch.object(
+                recall, "CODEX_SESSIONS_DIR", codex_dir
+            ):
+                payload = recall.build_doctor_payload(self.conn)
+                actions = recall.apply_doctor_fixes(self.conn, payload)
+                refreshed = recall.build_doctor_payload(self.conn, fix_applied=True, actions=actions)
+
+            self.assertGreaterEqual(refreshed["index"]["total_sessions"], 1)
+            self.assertTrue(refreshed["actions"])
 
 
 if __name__ == "__main__":

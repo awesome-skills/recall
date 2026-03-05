@@ -6,11 +6,14 @@
 - Update skill metadata to fork ownership (`awesome-skills`) and bump skill version to `0.4.0`
 - Add `--version` to print version metadata, schema version, DB schema, and commit SHA
 - Add `--doctor` to run local health checks (DB writability, source directories, index stats, latest index timestamps)
+- Add `--doctor --fix` to apply safe automatic fixes for common issues (e.g. empty index)
+- Doctor output now includes actionable `next` suggestions
 
 ### Session overview
 - Store first meaningful user message as `summary` in sessions table
 - Show summary line in `--list` and search output — no more guessing what a session was about
 - Timestamps now display `YYYY-MM-DD HH:MM` for easier identification
+- Add `--summary-len` and `--no-summary` output controls
 
 ### Subagent handling
 - Index `is_subagent` and `parent_session_id` in sessions table
@@ -28,14 +31,20 @@
 
 ### Data quality
 - Infer project path from Claude file path when `cwd` is missing (e.g. `-Users-admin-work` → `/Users/admin/work`)
+- Normalize project paths with `realpath` to reduce filter mismatches caused by symlinks
 - Add `--offset` for result pagination
+- JSON results now include source-specific `resume_command` for direct session resume
 
 ### Performance
 - Directory-level mtime checkpoint (`dir_checkpoints` table) to skip unchanged directories during indexing
 - `os.walk` replaces recursive `glob` — only files in changed directories are stat'd
 
 ### Tests
-- Add 69-test regression suite covering query sanitization, project matching, CJK fallback, orphan cleanup, subagent filtering, slug deduplication, directory checkpoints, noise filtering, schema migration, version/doctor diagnostics
+- Expand regression coverage for path normalization, resume command generation, summary output controls, and doctor auto-fix behavior
+
+### Release & CI
+- Add `RELEASE.md` with fork release process and tagging guidelines
+- Add GitHub Actions workflow to run unittest suite on push and pull requests
 
 ### Previous (carried from earlier PRs)
 - Add `--list` mode to list sessions by recency without a full-text query

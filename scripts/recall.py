@@ -11,8 +11,8 @@ import sys
 import math
 import time
 from datetime import datetime
-from glob import glob
 from pathlib import Path
+import shlex
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -182,6 +182,47 @@ def escape_like(value):
     )
 
 
+def normalize_project_path(path):
+    """Normalize a project path for stable indexing/filtering comparisons."""
+    if path is None:
+        return ""
+    value = str(path).strip()
+    if not value:
+        return ""
+    expanded = os.path.expanduser(value)
+    resolved = os.path.realpath(expanded)
+    return os.path.normpath(resolved)
+
+
+def build_resume_command(source, project, session_id):
+    """Build a source-appropriate resume command for a session."""
+    if not session_id:
+        return ""
+    if source == "claude":
+        resume_cmd = f"claude --resume {shlex.quote(session_id)}"
+    elif source == "codex":
+        resume_cmd = f"codex resume {shlex.quote(session_id)}"
+    else:
+        return ""
+    if project:
+        return f"cd {shlex.quote(project)} && {resume_cmd}"
+    return resume_cmd
+
+
+def truncate_summary(summary, max_len):
+    """Trim summary text to max_len with ellipsis when needed."""
+    if not summary:
+        return ""
+    if max_len is None or max_len <= 0:
+        return summary
+    clean = " ".join(summary.split())
+    if len(clean) <= max_len:
+        return clean
+    if max_len <= 3:
+        return clean[:max_len]
+    return clean[: max_len - 3] + "..."
+
+
 def subagent_parent_session_id(file_path):
     """Return parent session ID for Claude subagent transcript paths."""
     match = CLAUDE_SUBAGENT_RE.search(file_path or "")
@@ -210,10 +251,11 @@ def deduplicate_slugs(results):
     return display_slugs
 
 
-def result_to_dict(row, display_slug=None):
+def result_to_dict(row, display_slug=None, summary_len=120, include_summary=True):
     """Convert an internal result tuple to a serializable dict."""
     session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary = row
     parent_sid = subagent_parent_session_id(file_path)
+    summary_value = truncate_summary(summary or "", summary_len) if include_summary else ""
     return {
         "session_id": session_id,
         "source": source,
@@ -222,11 +264,12 @@ def result_to_dict(row, display_slug=None):
         "slug": display_slug or slug,
         "timestamp": timestamp,
         "date": format_timestamp(timestamp),
-        "summary": summary or "",
+        "summary": summary_value,
         "excerpt": make_excerpt(excerpt) if excerpt else "",
         "rank": rank,
         "is_subagent": bool(parent_sid),
         "parent_session_id": parent_sid or "",
+        "resume_command": build_resume_command(source, project, session_id),
     }
 
 
@@ -295,7 +338,8 @@ def infer_project_from_path(file_path):
         return ""
     encoded = match.group(1)  # e.g. "-Users-admin-work"
     # Replace leading dash and internal dashes with /
-    return "/" + encoded.lstrip("-").replace("-", "/")
+    inferred = "/" + encoded.lstrip("-").replace("-", "/")
+    return normalize_project_path(inferred)
 
 
 def sanitize_fts_query(query):
@@ -332,7 +376,7 @@ def sanitize_fts_query(query):
 
 def project_match_clause(project, alias):
     """Build SQL clause+params to match an exact project or its child paths."""
-    normalized = (project or "").rstrip("/")
+    normalized = normalize_project_path(project)
     if not normalized:
         normalized = "/"
 
@@ -369,7 +413,7 @@ def parse_claude_session(path):
                 if not project:
                     cwd = entry.get("cwd", "")
                     if cwd:
-                        project = cwd
+                        project = normalize_project_path(cwd)
 
                 # Extract slug from any entry
                 if not slug:
@@ -427,6 +471,8 @@ def parse_claude_session(path):
     # Infer project from file path if cwd was not found
     if not project:
         project = infer_project_from_path(path)
+    else:
+        project = normalize_project_path(project)
 
     # Detect subagent
     parent_sid = subagent_parent_session_id(path)
@@ -503,7 +549,7 @@ def parse_codex_session(path):
                     if entry_id and session_id.startswith("rollout-"):
                         session_id = entry_id
                     if not project:
-                        project = payload.get("cwd", "")
+                        project = normalize_project_path(payload.get("cwd", ""))
                     continue
 
                 # Current format: {type: "response_item", payload: {role, content, ...}}
@@ -535,7 +581,7 @@ def parse_codex_session(path):
                                         r"Current working directory:\s*(.+)", text
                                     )
                                     if cwd_match:
-                                        project = cwd_match.group(1).strip()
+                                        project = normalize_project_path(cwd_match.group(1).strip())
 
                 # Only index user and assistant messages (skip developer/system)
                 if role not in ("user", "assistant"):
@@ -567,7 +613,7 @@ def parse_codex_session(path):
         "session_id": session_id,
         "source": "codex",
         "file_path": path,
-        "project": project or "",
+        "project": normalize_project_path(project) if project else "",
         "slug": slug,
         "timestamp": earliest_ts,
         "summary": summary,
@@ -1015,7 +1061,25 @@ def format_epoch_seconds(ts_seconds, precise=True):
         return "unknown"
 
 
-def build_doctor_payload(conn):
+def build_doctor_suggestions(payload):
+    """Generate actionable next-step suggestions for doctor output."""
+    suggestions = []
+    checks = payload.get("checks", {})
+    index = payload.get("index", {})
+    warnings = payload.get("warnings", [])
+
+    if not checks.get("db_writable", True):
+        suggestions.append("Verify write permissions for ~/.recall.db and parent directory.")
+    if not checks.get("claude_projects_dir_exists", False) and not checks.get("codex_sessions_dir_exists", False):
+        suggestions.append("Ensure ~/.claude/projects or ~/.codex/sessions exists and contains session JSONL files.")
+    if index.get("total_sessions", 0) == 0:
+        suggestions.append("Run: recall.py --reindex --list --limit 5")
+    if warnings and not suggestions:
+        suggestions.append("Run: recall.py --doctor --json")
+    return suggestions
+
+
+def build_doctor_payload(conn, fix_applied=False, actions=None):
     """Collect health diagnostics for the local recall index."""
     can_write = True
     write_error = ""
@@ -1059,7 +1123,7 @@ def build_doctor_payload(conn):
     if total_sessions == 0:
         warnings.append("Index is empty. Run a search/list once to trigger indexing.")
 
-    return {
+    payload = {
         "name": SKILL_NAME,
         "owner": SKILL_OWNER,
         "version": SKILL_VERSION,
@@ -1086,7 +1150,44 @@ def build_doctor_payload(conn):
             "latest_indexed_file_mtime": format_epoch_seconds(latest_mtime, precise=True),
         },
         "warnings": warnings,
+        "fix_applied": bool(fix_applied),
+        "actions": actions or [],
     }
+    payload["suggestions"] = build_doctor_suggestions(payload)
+    return payload
+
+
+def apply_doctor_fixes(conn, payload):
+    """Apply safe, automatic fixes for common doctor findings."""
+    actions = []
+    checks = payload.get("checks", {})
+    index = payload.get("index", {})
+
+    if not checks.get("db_writable", False):
+        actions.append("Skipped auto-fix: database is not writable.")
+        return actions
+
+    if index.get("total_sessions", 0) == 0:
+        if not checks.get("claude_projects_dir_exists", False) and not checks.get("codex_sessions_dir_exists", False):
+            actions.append("Skipped auto-fix: no source session directories found.")
+            return actions
+        t0 = time.time()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            indexed, skipped, total_sessions, total_messages, orphaned = index_sessions(conn, force=False)
+            conn.commit()
+            elapsed = time.time() - t0
+            actions.append(
+                f"Indexed {indexed} sessions (skipped {skipped}, pruned {orphaned}) in {elapsed:.1f}s "
+                f"-> total {total_sessions} sessions / {total_messages} messages."
+            )
+        except Exception as exc:
+            conn.rollback()
+            actions.append(f"Auto-fix failed while indexing: {exc}")
+        return actions
+
+    actions.append("No automatic fixes were needed.")
+    return actions
 
 
 def print_doctor(payload, json_mode=False):
@@ -1122,6 +1223,14 @@ def print_doctor(payload, json_mode=False):
         print("warnings:")
         for warning in payload["warnings"]:
             print(f"  - {warning}")
+    if payload.get("actions"):
+        print("actions:")
+        for action in payload["actions"]:
+            print(f"  - {action}")
+    if payload.get("suggestions"):
+        print("next:")
+        for suggestion in payload["suggestions"]:
+            print(f"  - {suggestion}")
 
 
 def main():
@@ -1133,24 +1242,34 @@ def main():
     parser.add_argument("--source", choices=["claude", "codex"], help="Filter by source (claude or codex)")
     parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     parser.add_argument("--offset", type=int, default=0, help="Skip first N results (for pagination)")
+    parser.add_argument("--summary-len", type=int, default=120, help="Max summary length in output (default: 120)")
+    parser.add_argument("--no-summary", action="store_true", help="Hide per-session summary lines")
     parser.add_argument("--include-subagents", action="store_true", help="Include subagent sessions in results")
     parser.add_argument("--reindex", action="store_true", help="Force full rebuild of the index")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
     parser.add_argument("--version", action="store_true", help="Show skill/version metadata and exit")
     parser.add_argument("--doctor", action="store_true", help="Run local health checks and exit")
+    parser.add_argument("--fix", action="store_true", help="Apply safe auto-fixes (requires --doctor)")
 
     args = parser.parse_args()
+    if args.summary_len <= 0:
+        parser.error("--summary-len must be > 0")
+    if args.fix and not args.doctor:
+        parser.error("--fix requires --doctor")
     if args.version:
-        if args.list or args.query or args.doctor or args.reindex:
+        if args.list or args.query or args.doctor or args.reindex or args.fix:
             parser.error("--version cannot be combined with search/list/doctor options")
         print_version(json_mode=args.json)
         return
     if args.doctor and (args.list or args.query):
         parser.error("--doctor cannot be combined with search/list query arguments")
+    if args.doctor and args.reindex:
+        parser.error("--reindex cannot be combined with --doctor")
     if not args.list and not args.query and not args.doctor:
         parser.error("QUERY is required unless --list or --doctor is used")
 
     inc_sub = args.include_subagents
+    show_summary = not args.no_summary
 
     migrate_db_location()
     new_db = not DB_PATH.exists()
@@ -1166,6 +1285,9 @@ def main():
 
     if args.doctor:
         payload = build_doctor_payload(conn)
+        if args.fix:
+            actions = apply_doctor_fixes(conn, payload)
+            payload = build_doctor_payload(conn, fix_applied=True, actions=actions)
         print_doctor(payload, json_mode=args.json)
         conn.close()
         return
@@ -1239,6 +1361,10 @@ def main():
                     "total_sessions": total_sessions,
                     "total_messages": total_messages,
                 },
+                "output": {
+                    "summary_len": args.summary_len,
+                    "summary_enabled": show_summary,
+                },
                 "results": [],
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -1266,8 +1392,20 @@ def main():
                 "total_sessions": total_sessions,
                 "total_messages": total_messages,
             },
-            "results": [result_to_dict(row, display_slugs.get(row[0])) for row in results],
+            "output": {
+                "summary_len": args.summary_len,
+                "summary_enabled": show_summary,
+            },
         }
+        payload["results"] = [
+            result_to_dict(
+                row,
+                display_slugs.get(row[0]),
+                summary_len=args.summary_len,
+                include_summary=show_summary,
+            )
+            for row in results
+        ]
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         conn.close()
         return
@@ -1283,8 +1421,9 @@ def main():
         proj_name = Path(project).name if project else "unknown"
         display_slug = display_slugs.get(session_id, slug)
         print(f"[{i}] {date} | {proj_name} {src_tag}{subagent_tag}")
-        if summary:
-            print(f"    {summary}")
+        summary_display = truncate_summary(summary, args.summary_len) if show_summary else ""
+        if summary_display:
+            print(f"    {summary_display}")
         if project:
             print(f"    Project: {project}")
         print(f"    ID: {session_id}")

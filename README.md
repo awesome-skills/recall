@@ -62,11 +62,20 @@ recall.py --list --limit 10 --offset 10
 # Include subagent sessions (hidden by default)
 recall.py --list --include-subagents
 
+# Hide summary lines
+recall.py --list --no-summary
+
+# Customize summary length
+recall.py --list --summary-len 80
+
 # Show installed version/build metadata
 recall.py --version
 
 # Run local health checks
 recall.py --doctor
+
+# Run doctor with safe auto-fixes
+recall.py --doctor --fix
 
 # Machine-readable output
 recall.py --json "deploy"
@@ -108,6 +117,8 @@ read_session.py /path/to/session.jsonl            # JSON
 read_session.py /path/to/session.jsonl --pretty    # human-readable
 ```
 
+JSON output includes a `resume_command` field per result, ready to run.
+
 ### CLI reference
 
 ```
@@ -123,11 +134,14 @@ Options:
   --source claude|codex     Filter by source
   --limit N                 Max results (default: 10)
   --offset N                Skip first N results (for pagination)
+  --summary-len N           Max summary length in output (default: 120)
+  --no-summary              Hide per-session summary lines
   --include-subagents       Include subagent sessions in results
   --json                    Machine-readable JSON output
   --reindex                 Force full index rebuild
   --version                 Show version/schema/commit metadata and exit
   --doctor                  Run local health checks and exit
+  --fix                     Apply safe auto-fixes (requires --doctor)
 ```
 
 ### Under the hood
@@ -142,7 +156,7 @@ Options:
 | **Subagents** | Indexed with parent session ID; hidden by default, `--include-subagents` to show |
 | **Dependencies** | Zero — Python 3.9+ stdlib only |
 | **Migration** | Auto-migrates from legacy `~/.claude/recall.db` |
-| **Tests** | 69 regression tests (unittest) |
+| **Tests** | Regression tests (unittest) + GitHub Actions CI |
 
 ---
 
@@ -177,11 +191,20 @@ recall.py --list --limit 10 --offset 10
 # 显示子代理会话（默认隐藏）
 recall.py --list --include-subagents
 
+# 隐藏摘要行
+recall.py --list --no-summary
+
+# 自定义摘要长度
+recall.py --list --summary-len 80
+
 # 查看安装版本/构建信息
 recall.py --version
 
 # 运行本地健康检查
 recall.py --doctor
+
+# 运行健康检查并尝试安全自动修复
+recall.py --doctor --fix
 
 # 输出 JSON（方便脚本消费）
 recall.py --json "部署"
@@ -223,6 +246,8 @@ read_session.py /path/to/session.jsonl            # JSON 格式
 read_session.py /path/to/session.jsonl --pretty    # 可读格式
 ```
 
+JSON 输出中每条结果都带有可直接执行的 `resume_command` 字段。
+
 ### 命令参考
 
 ```
@@ -238,11 +263,14 @@ recall.py [QUERY] [选项]
   --source claude|codex     按来源过滤
   --limit N                 最大结果数（默认: 10）
   --offset N                跳过前 N 条结果（翻页）
+  --summary-len N           摘要最大长度（默认: 120）
+  --no-summary              隐藏每条会话摘要
   --include-subagents       显示子代理会话
   --json                    输出机器可读的 JSON
   --reindex                 强制重建索引
   --version                 显示版本/Schema/提交信息并退出
   --doctor                  运行本地健康检查并退出
+  --fix                     执行安全自动修复（需与 --doctor 一起使用）
 ```
 
 ### 技术细节
@@ -257,7 +285,7 @@ recall.py [QUERY] [选项]
 | **子代理** | 索引并标注父会话 ID；默认隐藏，`--include-subagents` 显示 |
 | **依赖** | 零依赖 — 仅使用 Python 3.9+ 标准库 |
 | **迁移** | 自动从旧路径 `~/.claude/recall.db` 迁移 |
-| **测试** | 66 个回归测试（unittest） |
+| **测试** | 回归测试（unittest）+ GitHub Actions CI |
 
 ---
 
@@ -268,6 +296,8 @@ recall.py [QUERY] [选项]
 Found a bug or have an idea? / 发现 bug 或有新想法？
 
 [Open an issue](https://github.com/awesome-skills/recall/issues) · [Submit a PR](https://github.com/awesome-skills/recall/pulls)
+
+Release process: see [RELEASE.md](RELEASE.md)
 
 Forked from [arjunkmrm/recall](https://github.com/arjunkmrm/recall) · [MIT License](LICENSE)
 
