@@ -37,13 +37,7 @@ Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶
 
 A skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/) that builds a local full-text search index over all your past session transcripts. Find any conversation in seconds.
 
-### Install
-
-```bash
-npx skills add awesome-skills/recall
-```
-
-Restart your agent, then use `/recall` or ask naturally:
+Provide this repository URL to your agent to install the skill automatically, then use `/recall` or ask naturally:
 
 > *"find the session where we discussed WebSocket reconnection"*
 
@@ -150,13 +144,7 @@ Options:
 
 一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 和 [Codex](https://openai.com/index/codex/) 的 skill，在本地为所有历史会话建立全文搜索索引，几秒内找到任何一段对话。
 
-### 安装
-
-```bash
-npx skills add awesome-skills/recall
-```
-
-重启 agent 后使用 `/recall`，或者直接自然语言提问：
+把本仓库地址提供给 agent 后可自动安装，随后使用 `/recall`，或者直接自然语言提问：
 
 > *"找一下之前讨论 WebSocket 重连的会话"*
 
