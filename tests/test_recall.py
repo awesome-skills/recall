@@ -289,6 +289,56 @@ class TestEscapeLike(unittest.TestCase):
         self.assertEqual(recall.escape_like("hello"), "hello")
 
 
+# ── Constraint building ───────────────────────────────────────────────────────
+
+class TestBuildSessionConstraints(unittest.TestCase):
+
+    def test_default_constraints(self):
+        conds, params = recall.build_session_constraints()
+        self.assertEqual(conds, ["s2.is_subagent = 0"])
+        self.assertEqual(params, [])
+
+    def test_include_subagents(self):
+        conds, params = recall.build_session_constraints(include_subagents=True)
+        self.assertEqual(conds, [])
+        self.assertEqual(params, [])
+
+    def test_project_constraint(self):
+        conds, params = recall.build_session_constraints(project="/tmp/work")
+        self.assertTrue(any("s2.project =" in c for c in conds))
+        self.assertIn("/tmp/work", params)
+
+    def test_days_constraint(self):
+        with patch("time.time", return_value=1710000000.0):
+            conds, params = recall.build_session_constraints(days=7)
+            # 1710000000 - 7 * 86400 = 1709395200
+            # 1709395200 * 1000 = 1709395200000
+            self.assertIn("s2.timestamp >= ?", conds)
+            self.assertIn(1709395200000, params)
+
+    def test_source_constraint(self):
+        conds, params = recall.build_session_constraints(source="claude")
+        self.assertIn("s2.source = ?", conds)
+        self.assertIn("claude", params)
+
+    def test_custom_alias(self):
+        conds, params = recall.build_session_constraints(alias="s")
+        self.assertEqual(conds, ["s.is_subagent = 0"])
+
+    def test_combined_constraints(self):
+        with patch("time.time", return_value=1710000000.0):
+            conds, params = recall.build_session_constraints(
+                project="/work", days=1, source="codex", alias="x", include_subagents=True
+            )
+            # project, days, source
+            self.assertEqual(len(conds), 3)
+            self.assertTrue(any("x.project =" in c for c in conds))
+            self.assertIn("x.timestamp >= ?", conds)
+            self.assertIn("x.source = ?", conds)
+            self.assertIn("/work", params)
+            self.assertIn("codex", params)
+
+
 # ── Subagent filtering ────────────────────────────────────────────────────────
 
 class TestSubagentFiltering(DBTestCase):
