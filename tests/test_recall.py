@@ -763,6 +763,7 @@ class TestIncrementalIndexFileUpdate(DBTestCase):
 
                 # Append new content — preserve dir mtime to simulate the bug
                 dir_stat = os.stat(tmpdir)
+                time.sleep(0.01)  # Ensure file mtime changes
                 with open(session_file, "a") as f:
                     f.write(json.dumps({
                         "type": "assistant", "role": "assistant",
