@@ -763,12 +763,18 @@ class TestIncrementalIndexFileUpdate(DBTestCase):
 
                 # Append new content — preserve dir mtime to simulate the bug
                 dir_stat = os.stat(tmpdir)
+                # Ensure mtime changes even on filesystems with low precision
+                file_stat = os.stat(session_file)
+                new_mtime = file_stat.st_mtime + 2.0
+
                 with open(session_file, "a") as f:
                     f.write(json.dumps({
                         "type": "assistant", "role": "assistant",
                         "message": {"content": "new assistant response"},
                         "timestamp": "2026-03-04T10:01:00Z",
                     }) + "\n")
+
+                os.utime(session_file, (file_stat.st_atime, new_mtime))
                 os.utime(tmpdir, (dir_stat.st_atime, dir_stat.st_mtime))
 
                 # Incremental index should still detect the file change

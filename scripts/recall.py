@@ -89,17 +89,22 @@ def create_schema(conn):
 
 def migrate_schema(conn):
     """Add columns if upgrading from an older schema."""
-    for col, col_type, default in [
-        ("source", "TEXT", "'claude'"),
-        ("file_path", "TEXT", "''"),
-        ("summary", "TEXT", "''"),
-        ("is_subagent", "INTEGER", "0"),
-        ("parent_session_id", "TEXT", "''"),
-    ]:
-        try:
-            conn.execute(f"SELECT {col} FROM sessions LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type} DEFAULT {default}")
+    cursor = conn.execute("PRAGMA table_info(sessions)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    # Migration statements for each potentially missing column.
+    # Hardcoded to avoid dynamic SQL construction with external input.
+    migrations = [
+        ("source", "ALTER TABLE sessions ADD COLUMN source TEXT DEFAULT 'claude'"),
+        ("file_path", "ALTER TABLE sessions ADD COLUMN file_path TEXT DEFAULT ''"),
+        ("summary", "ALTER TABLE sessions ADD COLUMN summary TEXT DEFAULT ''"),
+        ("is_subagent", "ALTER TABLE sessions ADD COLUMN is_subagent INTEGER DEFAULT 0"),
+        ("parent_session_id", "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''"),
+    ]
+
+    for col, sql in migrations:
+        if col not in existing_columns:
+            conn.execute(sql)
             conn.commit()
     current_ver = conn.execute("PRAGMA user_version").fetchone()[0]
     if int(current_ver or 0) < SCHEMA_VERSION:
