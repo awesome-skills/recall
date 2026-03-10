@@ -770,10 +770,30 @@ def prune_orphan_sessions(conn):
     Always performs a full scan.  Callers that want rate-limiting (e.g.
     ``index_sessions``) should check ``_should_skip_prune`` beforehand.
     """
+    # Pre-collect directory listings to avoid redundant I/O in the loop.
+    # session_id -> file_path
+    sessions = conn.execute("SELECT session_id, file_path FROM sessions").fetchall()
+
+    # Identify unique directories
+    dirs_to_scan = {os.path.dirname(fp) for _, fp in sessions if fp}
+
+    existing_files = set()
+    for d in dirs_to_scan:
+        if os.path.isdir(d):
+            try:
+                for entry in os.scandir(d):
+                    if entry.is_file():
+                        existing_files.add(entry.path)
+            except OSError:
+                continue
+
     to_delete = []
-    for session_id, file_path in conn.execute("SELECT session_id, file_path FROM sessions"):
-        if file_path and not os.path.exists(file_path):
-            to_delete.append((session_id,))
+    for session_id, file_path in sessions:
+        if file_path and file_path not in existing_files:
+            # Fallback for cases where the file might be outside scanned dirs
+            # or if the directory scan failed.
+            if not os.path.exists(file_path):
+                to_delete.append((session_id,))
 
     if to_delete:
         conn.executemany("DELETE FROM sessions WHERE session_id = ?", to_delete)
