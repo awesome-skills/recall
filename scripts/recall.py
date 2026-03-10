@@ -31,6 +31,13 @@ DB_PATH = Path.home() / ".recall.db"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
 
+# — Tuning constants ————————————————————————————————————————————————————————
+SUMMARY_MAX_LEN = 120           # max chars stored per session summary
+CANDIDATE_OVERFETCH_FACTOR = 3  # fetch N× limit to allow recency re-ranking
+RECENCY_WEIGHT = 0.2            # blended rank = bm25 * (1 + weight * boost)
+RECENCY_HALF_LIFE_DAYS = 30     # exponential decay half-life
+LN2 = 0.693147                  # math.log(2), used in decay formula
+
 
 def create_schema(conn):
     # Use individual execute() calls (not executescript) so the caller's
@@ -198,7 +205,11 @@ def migrate_db_location():
             tmp_conn.close()
         except sqlite3.Error:
             pass
-        old_path.rename(DB_PATH)
+        try:
+            old_path.rename(DB_PATH)
+        except OSError as e:
+            print(f"Warning: could not migrate {old_path} to {DB_PATH}: {e}", file=sys.stderr)
+            return
         # Clean up any residual WAL/SHM files
         for suffix in ("-wal", "-shm"):
             old_extra = Path(str(old_path) + suffix)
@@ -216,7 +227,7 @@ CLAUDE_SUBAGENT_RE = re.compile(r"/([^/]+)/subagents/agent-[^/]+\.jsonl$")
 CLAUDE_PROJECT_DIR_RE = re.compile(r"/\.claude/projects/(-[^/]+)")
 LIKE_ESCAPE = "\\"
 # Characters that are FTS5 operators and need quoting when used literally
-FTS_OPERATOR_CHARS = set('(){}[]^~:!@#$&|\\/-')
+FTS_OPERATOR_CHARS = set('(){}[]^~:!@#$&|\\/-.<>=;,\'?')
 
 def escape_like(value):
     """Escape LIKE wildcards in user-provided terms."""
@@ -542,7 +553,7 @@ def parse_claude_session(path):
 
                 # Capture first meaningful user message as summary
                 if not summary and role == "user":
-                    summary = text.replace("\n", " ").strip()[:120]
+                    summary = text.replace("\n", " ").strip()[:SUMMARY_MAX_LEN]
 
     except (OSError, PermissionError) as e:
         print(f"Warning: skipping {path}: {e}", file=sys.stderr)
@@ -682,7 +693,7 @@ def parse_codex_session(path):
 
                 # Capture first meaningful user message as summary
                 if not summary and role == "user":
-                    summary = text.replace("\n", " ").strip()[:120]
+                    summary = text.replace("\n", " ").strip()[:SUMMARY_MAX_LEN]
 
     except (OSError, PermissionError) as e:
         print(f"Warning: skipping {path}: {e}", file=sys.stderr)
@@ -696,7 +707,7 @@ def parse_codex_session(path):
         "session_id": session_id,
         "source": "codex",
         "file_path": path,
-        "project": normalize_project_path(project) if project else "",
+        "project": project or "",
         "slug": slug,
         "timestamp": earliest_ts,
         "summary": summary,
@@ -1010,7 +1021,7 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
     if session_conds:
         session_filter = " AND " + " AND ".join(session_conds)
 
-    candidate_limit = (offset + limit) * 3
+    candidate_limit = (offset + limit) * CANDIDATE_OVERFETCH_FACTOR
     sql = f"""
         SELECT m.session_id, MAX(m.rowid) as match_rowid,
                s.source, s.file_path, s.project, s.slug, s.timestamp, s.summary
@@ -1045,12 +1056,12 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
 
         if timestamp:
             age_days = max((now_ms - timestamp) / 86_400_000, 0)
-            recency_boost = math.exp(-0.693 * age_days / 30)  # half-life = 30 days
+            recency_boost = math.exp(-LN2 * age_days / RECENCY_HALF_LIFE_DAYS)
         else:
             recency_boost = 0.0
 
         # Keep FTS-ranked results ahead of fallback results; use recency within fallback set.
-        blended_rank = 1.0 - 0.2 * recency_boost
+        blended_rank = 1.0 - RECENCY_WEIGHT * recency_boost
         results.append((session_id, src, file_path, project_value, slug, timestamp, excerpt, blended_rank, summary or ""))
 
     if not preserve_sql_order:
@@ -1126,7 +1137,7 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
 
     # Over-fetch candidates so recency re-ranking can surface recent results
     # that pure BM25 might have ranked just outside the cutoff.
-    candidate_limit = (offset + limit) * 3
+    candidate_limit = (offset + limit) * CANDIDATE_OVERFETCH_FACTOR
     fts_params.append(candidate_limit)
 
     # First find best-ranking session_ids.
@@ -1178,10 +1189,10 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
         timestamp = meta[4]
         if timestamp:
             age_days = max((now_ms - timestamp) / 86_400_000, 0)
-            recency_boost = math.exp(-0.693 * age_days / 30)  # half-life = 30 days
+            recency_boost = math.exp(-LN2 * age_days / RECENCY_HALF_LIFE_DAYS)
         else:
             recency_boost = 0.0
-        blended_rank = rank * (1 + 0.2 * recency_boost)
+        blended_rank = rank * (1 + RECENCY_WEIGHT * recency_boost)
         candidates.append((session_id, meta, blended_rank))
 
     # Sort and slice BEFORE fetching snippets (reduces snippet queries to ≤ limit).
@@ -1447,10 +1458,18 @@ def main():
     migrate_db_location()
     new_db = not DB_PATH.exists()
     old_umask = os.umask(0o077)
-    conn = sqlite3.connect(str(DB_PATH))
-    os.umask(old_umask)
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+    except sqlite3.Error as e:
+        print(f"Error: cannot open database {DB_PATH}: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        os.umask(old_umask)
     if new_db:
-        os.chmod(str(DB_PATH), 0o600)
+        try:
+            os.chmod(str(DB_PATH), 0o600)
+        except OSError:
+            pass
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")

@@ -40,4 +40,6 @@ def is_noise(text):
     if not text:
         return True
     stripped = text.lstrip()
+    if not stripped:
+        return True
     return any(stripped.startswith(marker) for marker in SKIP_MARKERS)
