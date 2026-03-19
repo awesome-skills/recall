@@ -1262,5 +1262,99 @@ class TestDoctorFixForceReindex(DBTestCase):
             self.assertGreaterEqual(refreshed["index"]["total_sessions"], 1)
 
 
+# ── Daily report ─────────────────────────────────────────────────────────────
+
+class TestDailyReport(DBTestCase):
+    """Tests for build_daily_report()."""
+
+    def _today_ms(self, hour=10):
+        """Return epoch-ms for today at the given local hour."""
+        from datetime import datetime as dt
+        today = dt.today().date()
+        return int(dt(today.year, today.month, today.day, hour, 0, 0).timestamp() * 1000)
+
+    def test_empty_returns_zero_sessions(self):
+        result = recall.build_daily_report(self.conn)
+        self.assertEqual(result["total_sessions"], 0)
+        self.assertEqual(result["projects"], [])
+        self.assertEqual(result["sources"], {"claude": 0, "codex": 0})
+
+    def test_today_sessions_included(self):
+        self._insert_session("s1", project="/work/proj", timestamp=self._today_ms(9))
+        self._insert_messages("s1", [("user", "fix the bug"), ("assistant", "sure"), ("user", "thanks")])
+        result = recall.build_daily_report(self.conn)
+        self.assertEqual(result["total_sessions"], 1)
+        session = result["projects"][0]["sessions"][0]
+        self.assertEqual(session["session_id"], "s1")
+        self.assertEqual(session["user_messages"], ["fix the bug", "thanks"])
+        self.assertEqual(session["total_messages"], 3)
+
+    def test_yesterday_sessions_excluded(self):
+        yesterday_ms = self._today_ms(10) - 86400 * 1000
+        self._insert_session("s_old", timestamp=yesterday_ms)
+        result = recall.build_daily_report(self.conn)
+        self.assertEqual(result["total_sessions"], 0)
+
+    def test_specified_date(self):
+        yesterday_ms = self._today_ms(10) - 86400 * 1000
+        self._insert_session("s_yest", timestamp=yesterday_ms)
+        from datetime import datetime as dt, timedelta
+        yesterday_str = (dt.today().date() - timedelta(days=1)).isoformat()
+        result = recall.build_daily_report(self.conn, date_str=yesterday_str)
+        self.assertEqual(result["total_sessions"], 1)
+        self.assertEqual(result["date"], yesterday_str)
+
+    def test_invalid_date_exits(self):
+        with self.assertRaises(SystemExit):
+            recall.build_daily_report(self.conn, date_str="not-a-date")
+
+    def test_grouped_by_project(self):
+        self._insert_session("s1", project="/proj/a", timestamp=self._today_ms(9))
+        self._insert_session("s2", project="/proj/b", timestamp=self._today_ms(10))
+        self._insert_session("s3", project="/proj/a", timestamp=self._today_ms(11))
+        result = recall.build_daily_report(self.conn)
+        paths = [p["path"] for p in result["projects"]]
+        self.assertIn("/proj/a", paths)
+        self.assertIn("/proj/b", paths)
+        proj_a = next(p for p in result["projects"] if p["path"] == "/proj/a")
+        self.assertEqual(len(proj_a["sessions"]), 2)
+
+    def test_no_project_grouped_under_none(self):
+        self._insert_session("s1", project="", timestamp=self._today_ms(9))
+        result = recall.build_daily_report(self.conn)
+        self.assertEqual(result["projects"][0]["path"], None)
+
+    def test_subagents_excluded(self):
+        self._insert_session("s_main", timestamp=self._today_ms(9), is_subagent=0)
+        self._insert_session("s_sub", timestamp=self._today_ms(10), is_subagent=1)
+        result = recall.build_daily_report(self.conn)
+        self.assertEqual(result["total_sessions"], 1)
+        self.assertEqual(result["projects"][0]["sessions"][0]["session_id"], "s_main")
+
+    def test_user_message_truncation(self):
+        long_msg = "x" * 400
+        self._insert_session("s1", timestamp=self._today_ms(9))
+        self._insert_messages("s1", [("user", long_msg)])
+        result = recall.build_daily_report(self.conn)
+        msg = result["projects"][0]["sessions"][0]["user_messages"][0]
+        self.assertTrue(msg.endswith("..."))
+        self.assertEqual(len(msg), recall.DAILY_USER_MSG_MAX_CHARS + 3)
+
+    def test_sources_count(self):
+        self._insert_session("s1", source="claude", timestamp=self._today_ms(9))
+        self._insert_session("s2", source="claude", timestamp=self._today_ms(10))
+        self._insert_session("s3", source="codex", timestamp=self._today_ms(11))
+        result = recall.build_daily_report(self.conn)
+        self.assertEqual(result["sources"]["claude"], 2)
+        self.assertEqual(result["sources"]["codex"], 1)
+
+    def test_resume_command_present(self):
+        self._insert_session("s1", source="claude", project="/proj", timestamp=self._today_ms(9))
+        result = recall.build_daily_report(self.conn)
+        cmd = result["projects"][0]["sessions"][0]["resume_command"]
+        self.assertIn("claude", cmd)
+        self.assertIn("s1", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

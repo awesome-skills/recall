@@ -37,6 +37,8 @@ CANDIDATE_OVERFETCH_FACTOR = 3  # fetch N× limit to allow recency re-ranking
 RECENCY_WEIGHT = 0.2            # blended rank = bm25 * (1 + weight * boost)
 RECENCY_HALF_LIFE_DAYS = 30     # exponential decay half-life
 LN2 = 0.693147                  # math.log(2), used in decay formula
+DAILY_USER_MSG_MAX_CHARS = 300  # truncate each user message at this many chars
+DAILY_USER_MSG_MAX_COUNT = 100  # max user messages per session in daily report
 
 
 def create_schema(conn):
@@ -1413,6 +1415,87 @@ def print_doctor(payload, json_mode=False):
             print(f"  - {suggestion}")
 
 
+def build_daily_report(conn, date_str=None):
+    """Return a structured daily report dict for a given date (YYYY-MM-DD) or today.
+
+    The report groups non-subagent sessions by project (cwd).  Sessions without
+    a project path are grouped under path=None.  All user messages are fetched
+    for each session, truncated to DAILY_USER_MSG_MAX_CHARS, capped at
+    DAILY_USER_MSG_MAX_COUNT entries.  total_messages is the combined user +
+    assistant message count for each session.
+    """
+    if date_str:
+        try:
+            report_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"Error: invalid date '{date_str}', expected YYYY-MM-DD", file=sys.stderr)
+            sys.exit(1)
+    else:
+        report_date = datetime.today().date()
+
+    # Epoch-ms bounds for the natural day in local timezone.
+    start_ms = int(datetime(report_date.year, report_date.month, report_date.day).timestamp() * 1000)
+    end_ms = start_ms + 86400 * 1000 - 1
+
+    rows = conn.execute(
+        "SELECT session_id, source, file_path, project, slug, timestamp "
+        "FROM sessions "
+        "WHERE is_subagent = 0 AND timestamp >= ? AND timestamp <= ? "
+        "ORDER BY timestamp ASC",
+        (start_ms, end_ms),
+    ).fetchall()
+
+    sources_count = {"claude": 0, "codex": 0}
+    projects_map = {}  # project_path (or None) -> list of session dicts
+
+    for session_id, source, file_path, project, slug, timestamp in rows:
+        if source in sources_count:
+            sources_count[source] += 1
+
+        total_row = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        total_messages = total_row[0] if total_row else 0
+
+        user_msg_rows = conn.execute(
+            "SELECT text FROM messages WHERE session_id = ? AND role = 'user' LIMIT ?",
+            (session_id, DAILY_USER_MSG_MAX_COUNT),
+        ).fetchall()
+
+        user_messages = []
+        for (text,) in user_msg_rows:
+            if text:
+                if len(text) > DAILY_USER_MSG_MAX_CHARS:
+                    text = text[:DAILY_USER_MSG_MAX_CHARS] + "..."
+                user_messages.append(text)
+
+        session_dict = {
+            "session_id": session_id,
+            "slug": slug or "",
+            "started_at": format_timestamp(timestamp, precise=True) if timestamp else None,
+            "source": source,
+            "total_messages": total_messages,
+            "resume_command": build_resume_command(source, project, session_id),
+            "user_messages": user_messages,
+        }
+
+        proj_key = project if project else None
+        projects_map.setdefault(proj_key, []).append(session_dict)
+
+    projects = [
+        {"path": path, "sessions": sessions}
+        for path, sessions in sorted(projects_map.items(), key=lambda x: (x[0] is None, x[0] or ""))
+    ]
+
+    return {
+        "date": report_date.isoformat(),
+        "generated_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_sessions": len(rows),
+        "sources": sources_count,
+        "projects": projects,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Search past Claude Code and Codex sessions")
     parser.add_argument("query", nargs="?", help="Search query; optional in --list mode to filter listed sessions")
@@ -1430,6 +1513,8 @@ def main():
     parser.add_argument("--version", action="store_true", help="Show skill/version metadata and exit")
     parser.add_argument("--doctor", action="store_true", help="Run local health checks and exit")
     parser.add_argument("--fix", action="store_true", help="Apply safe auto-fixes (requires --doctor)")
+    parser.add_argument("--daily", nargs="?", const="", metavar="DATE",
+                        help="Generate daily report for DATE (YYYY-MM-DD) or today if omitted")
 
     args = parser.parse_args()
     if args.limit <= 0:
@@ -1449,8 +1534,10 @@ def main():
         parser.error("--doctor cannot be combined with search/list query arguments")
     if args.doctor and args.reindex:
         parser.error("--reindex cannot be combined with --doctor")
-    if not args.list and not args.query and not args.doctor:
-        parser.error("QUERY is required unless --list or --doctor is used")
+    if args.daily is not None and (args.list or args.query or args.doctor):
+        parser.error("--daily cannot be combined with search/list/doctor options")
+    if not args.list and not args.query and not args.doctor and args.daily is None:
+        parser.error("QUERY is required unless --list, --daily, or --doctor is used")
 
     inc_sub = args.include_subagents
     show_summary = not args.no_summary
@@ -1483,6 +1570,20 @@ def main():
                 actions = apply_doctor_fixes(conn, payload)
                 payload = build_doctor_payload(conn, fix_applied=True, actions=actions)
             print_doctor(payload, json_mode=args.json)
+            return
+
+        if args.daily is not None:
+            # Index first so the report reflects the latest sessions.
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                index_sessions(conn, force=False)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            date_arg = args.daily if args.daily else None
+            payload = build_daily_report(conn, date_str=date_arg)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
             return
 
         # Index (single writer transaction for better concurrent safety)
