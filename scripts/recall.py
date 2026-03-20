@@ -112,6 +112,7 @@ def migrate_schema(conn):
                 "UPDATE sessions SET mtime = 0 "
                 "WHERE summary LIKE 'Tool result of `%' OR summary LIKE 'Unknown skill: %'"
             )
+            conn.commit()
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     # Ensure indexes exist for databases created before indexes were added
     for idx_sql in [
@@ -256,7 +257,11 @@ def normalize_project_path(path):
         return ""
     expanded = os.path.expanduser(value)
     resolved = os.path.realpath(expanded)
-    return os.path.normpath(resolved)
+    normalized = os.path.normpath(resolved)
+    # Treat filesystem root as "no project" — it means cwd was unset or ran in /.
+    if normalized == "/":
+        return ""
+    return normalized
 
 
 def build_resume_command(source, project, session_id):
@@ -272,6 +277,24 @@ def build_resume_command(source, project, session_id):
     if project:
         return f"cd {shlex.quote(project)} && {resume_cmd}"
     return resume_cmd
+
+
+# Markers that indicate the start of MCP-injected content appended to a user message.
+# When present mid-message, everything from the marker onward is stripped before
+# the text is used as a summary (the user's actual request precedes the marker).
+_INLINE_NOISE_MARKERS = (
+    "\n# The result of `",
+    "\n\n# The result of `",
+)
+
+
+def strip_inline_noise(text):
+    """Remove MCP-injected tail from a user message before using it as a summary."""
+    for marker in _INLINE_NOISE_MARKERS:
+        idx = text.find(marker)
+        if idx != -1:
+            text = text[:idx]
+    return text.strip()
 
 
 def truncate_summary(summary, max_len):
@@ -562,7 +585,7 @@ def parse_claude_session(path):
 
                 # Capture first meaningful user message as summary
                 if not summary and role == "user":
-                    summary = text.replace("\n", " ").strip()[:SUMMARY_MAX_LEN]
+                    summary = strip_inline_noise(text).replace("\n", " ").strip()[:SUMMARY_MAX_LEN]
 
     except (OSError, PermissionError) as e:
         print(f"Warning: skipping {path}: {e}", file=sys.stderr)
@@ -702,7 +725,7 @@ def parse_codex_session(path):
 
                 # Capture first meaningful user message as summary
                 if not summary and role == "user":
-                    summary = text.replace("\n", " ").strip()[:SUMMARY_MAX_LEN]
+                    summary = strip_inline_noise(text).replace("\n", " ").strip()[:SUMMARY_MAX_LEN]
 
     except (OSError, PermissionError) as e:
         print(f"Warning: skipping {path}: {e}", file=sys.stderr)
@@ -1549,6 +1572,10 @@ def main():
     inc_sub = args.include_subagents
     show_summary = not args.no_summary
 
+    # Expand --project . to the current working directory.
+    if args.project == ".":
+        args.project = os.getcwd()
+
     migrate_db_location()
     new_db = not DB_PATH.exists()
     old_umask = os.umask(0o077)
@@ -1719,11 +1746,20 @@ def main():
 
         if args.list:
             mode_hint = "by recency" if not args.query else "by recency, filtered by query"
-            verb = f"Listed"
+            verb = "Listed"
+            active_filters = []
+            if args.source:
+                active_filters.append(f"source={args.source}")
+            if args.days:
+                active_filters.append(f"days={args.days}")
+            if args.project:
+                active_filters.append(f"project={args.project}")
+            filter_str = f" | filters: {', '.join(active_filters)}" if active_filters else ""
         else:
             mode_hint = "by relevance"
+            filter_str = ""
             verb = "Found"
-        print(f"{verb} {len(results)} sessions [{mode_hint}] (index: {total_sessions} sessions, {total_messages} messages):\n")
+        print(f"{verb} {len(results)} sessions [{mode_hint}{filter_str}] (index: {total_sessions} sessions, {total_messages} messages):\n")
 
         for i, (session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary) in enumerate(results, 1):
             date = format_timestamp(timestamp, precise=True)
