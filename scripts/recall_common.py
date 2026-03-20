@@ -18,6 +18,9 @@ SKIP_MARKERS = (
     "<tool-use-id>",
     "<bash-stdout>",
     "<bash-input>",
+    # MCP tool results injected as user-turn text blocks
+    "Tool result of `",
+    "Unknown skill: ",
 )
 
 

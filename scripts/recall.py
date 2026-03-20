@@ -23,7 +23,7 @@ from recall_common import extract_text, is_noise
 SKILL_NAME = "recall"
 SKILL_OWNER = "awesome-skills"
 SKILL_VERSION = "0.4.0"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
@@ -103,8 +103,15 @@ def migrate_schema(conn):
         except sqlite3.OperationalError:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type} DEFAULT {default}")
             conn.commit()
-    current_ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    if int(current_ver or 0) < SCHEMA_VERSION:
+    current_ver = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    if current_ver < SCHEMA_VERSION:
+        if current_ver < 2:
+            # v1→v2: mark sessions with MCP-injected noise summaries for re-indexing
+            # by zeroing mtime so the incremental indexer re-parses them.
+            conn.execute(
+                "UPDATE sessions SET mtime = 0 "
+                "WHERE summary LIKE 'Tool result of `%' OR summary LIKE 'Unknown skill: %'"
+            )
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     # Ensure indexes exist for databases created before indexes were added
     for idx_sql in [
@@ -1710,8 +1717,13 @@ def main():
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return
 
-        verb = "Listed" if args.list else "Found"
-        print(f"{verb} {len(results)} sessions (index: {total_sessions} sessions, {total_messages} messages):\n")
+        if args.list:
+            mode_hint = "by recency" if not args.query else "by recency, filtered by query"
+            verb = f"Listed"
+        else:
+            mode_hint = "by relevance"
+            verb = "Found"
+        print(f"{verb} {len(results)} sessions [{mode_hint}] (index: {total_sessions} sessions, {total_messages} messages):\n")
 
         for i, (session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary) in enumerate(results, 1):
             date = format_timestamp(timestamp, precise=True)

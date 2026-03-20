@@ -418,6 +418,35 @@ class TestNoiseFiltering(unittest.TestCase):
     def test_leading_whitespace_handled(self):
         self.assertTrue(is_noise("  <system-reminder>content"))
 
+    def test_mcp_tool_result_is_noise(self):
+        self.assertTrue(is_noise('Tool result of `get_variables`. Calling `get_variables` is not necessary anymore.'))
+
+    def test_unknown_skill_is_noise(self):
+        self.assertTrue(is_noise("Unknown skill: recall"))
+        self.assertTrue(is_noise("Unknown skill: ralph-loop"))
+
+    def test_mcp_tool_result_not_used_as_summary(self):
+        """Sessions whose first user message is an MCP tool result should skip to real user message."""
+        import tempfile, json as _json, os as _os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            entries = [
+                {"type": "user", "role": "user", "message": {"content": 'Tool result of `get_variables`. Calling `get_variables` is not necessary anymore. {"variables": {}}'},
+                 "timestamp": "2026-03-20T10:00:00Z"},
+                {"type": "user", "role": "user", "message": {"content": "fix the login bug"},
+                 "timestamp": "2026-03-20T10:00:01Z"},
+            ]
+            for entry in entries:
+                f.write(_json.dumps(entry) + "\n")
+            path = f.name
+        try:
+            result = recall.parse_claude_session(path)
+            self.assertIsNotNone(result)
+            metadata, messages = result
+            self.assertEqual(metadata["summary"], "fix the login bug")
+            self.assertEqual(len(messages), 1, "Tool result message should be filtered from index")
+        finally:
+            _os.unlink(path)
+
 
 # ── extract_text ──────────────────────────────────────────────────────────────
 
