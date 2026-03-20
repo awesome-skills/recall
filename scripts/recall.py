@@ -285,6 +285,7 @@ def build_resume_command(source, project, session_id):
 _INLINE_NOISE_MARKERS = (
     "\n# The result of `",
     "\n\n# The result of `",
+    " # The result of `",   # summary stored with newlines→spaces; must match post-join form
 )
 
 
@@ -773,6 +774,9 @@ def build_session_constraints(project=None, days=None, source=None, alias="s2",
                     f"({alias}.project != ? AND {alias}.project NOT LIKE ? ESCAPE '{LIKE_ESCAPE}')"
                 )
                 params.extend([excl_norm, like_prefix + "/%"])
+            else:
+                # excl normalised to "" (e.g. input was "/") → exclude sessions with no project
+                conds.append(f"{alias}.project != ''")
     if days:
         cutoff = int((time.time() - days * 86400) * 1000)
         conds.append(f"{alias}.timestamp >= ?")
@@ -1776,6 +1780,9 @@ def main():
                 active_filters.append(f"days={args.days}")
             if args.project:
                 active_filters.append(f"project={args.project}")
+            if args.exclude_project:
+                for ep in args.exclude_project:
+                    active_filters.append(f"exclude={ep}")
             filter_str = f" | filters: {', '.join(active_filters)}" if active_filters else ""
         else:
             mode_hint = "by relevance"
