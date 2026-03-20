@@ -1,7 +1,7 @@
 ---
-name: recall
+name: memex
 description: >
-  Search past Claude Code and Codex sessions. Triggers: /recall, "search old conversations",
+  Search past Claude Code and Codex sessions. Triggers: /memex, "search old conversations",
   "find a past session", "recall a previous conversation", "search session history",
   "what did we discuss", "remember when we"
 metadata:
@@ -10,76 +10,76 @@ metadata:
   license: MIT
 ---
 
-# /recall — Search Past Claude & Codex Sessions
+# /memex — Search Past Claude & Codex Sessions
 
 Search all past Claude Code and Codex sessions using full-text search with BM25 ranking.
 
 ## Usage
 
 ```bash
-python3 <RECALL_SKILL_DIR>/scripts/recall.py [QUERY] [--list] [--project PATH] [--days N] [--source claude|codex] [--limit N] [--offset N] [--summary-len N] [--no-summary] [--include-subagents] [--reindex] [--json] [--version] [--doctor] [--fix]
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py [QUERY] [--list] [--project PATH] [--days N] [--source claude|codex] [--limit N] [--offset N] [--summary-len N] [--no-summary] [--include-subagents] [--reindex] [--json] [--version] [--doctor] [--fix]
 ```
 
-`<RECALL_SKILL_DIR>` varies by installation. Common examples:
-- `~/.claude/skills/recall`
-- `~/.agents/skills/recall`
+`<MEMEX_SKILL_DIR>` varies by installation. Common examples:
+- `~/.claude/skills/memex`
+- `~/.agents/skills/memex`
 
 ## Examples
 
 ```bash
 # Simple keyword search
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "bufferStore"
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "bufferStore"
 
 # Phrase search (exact match)
-python3 <RECALL_SKILL_DIR>/scripts/recall.py '"ACP protocol"'
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py '"ACP protocol"'
 
 # Boolean query
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "rust AND async"
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "rust AND async"
 
 # Prefix search
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "buffer*"
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "buffer*"
 
 # Filter by project and recency
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "state machine" --project ~/my-project --days 7
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "state machine" --project ~/my-project --days 7
 
 # Search only Claude Code sessions
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "buffer" --source claude
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "buffer" --source claude
 
 # Search only Codex sessions
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "buffer" --source codex
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "buffer" --source codex
 
 # Force reindex
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --reindex "test"
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --reindex "test"
 
 # List recent sessions
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --limit 20
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --list --limit 20
 
 # List mode with optional text filter
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --list "state machine" --limit 20
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --list "state machine" --limit 20
 
 # Machine-readable JSON output
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --json --source codex --list "auth api"
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --json --source codex --list "auth api"
 
 # Paginate results
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --limit 10 --offset 10
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --list --limit 10 --offset 10
 
 # Include subagent sessions (hidden by default)
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --include-subagents
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --list --include-subagents
 
 # Hide summary lines
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --no-summary
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --list --no-summary
 
 # Shorter summaries
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --list --summary-len 80
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --list --summary-len 80
 
 # Show installed version metadata
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --version
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --version
 
 # Run local health checks
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --doctor
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --doctor
 
 # Run doctor with safe auto-fixes
-python3 <RECALL_SKILL_DIR>/scripts/recall.py --doctor --fix
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py --doctor --fix
 ```
 
 ## Query Syntax (FTS5)
@@ -107,7 +107,7 @@ codex resume SESSION_ID
 Each result includes a `File:` path. Use it to read the raw transcript (auto-detects format):
 
 ```bash
-python3 <RECALL_SKILL_DIR>/scripts/read_session.py <File-path-from-result>
+python3 <MEMEX_SKILL_DIR>/scripts/read_session.py <File-path-from-result>
 ```
 
 If results are missing `File:` paths, run `--reindex` to backfill.
@@ -117,20 +117,20 @@ If results are missing `File:` paths, run `--reindex` to backfill.
 When invoked from **Claude Code**, always add `--source claude` to avoid surfacing Codex sessions:
 
 ```bash
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "query" --source claude
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "query" --source claude
 ```
 
 When invoked from **Codex**, always add `--source codex`:
 
 ```bash
-python3 <RECALL_SKILL_DIR>/scripts/recall.py "query" --source codex
+python3 <MEMEX_SKILL_DIR>/scripts/memex.py "query" --source codex
 ```
 
 Omit `--source` only when explicitly searching across both tools.
 
 ## Notes
 
-- Index is stored at `~/.recall.db` (SQLite FTS5, auto-migrated from `~/.claude/recall.db`)
+- Index is stored at `~/.memex.db` (SQLite FTS5, auto-migrated from legacy ~/.recall.db and ~/.claude/recall.db`)
 - Indexes both `~/.claude/projects/` (Claude Code) and `~/.codex/sessions/` (Codex)
 - Each session shows a one-line summary (first meaningful user message)
 - Subagent sessions are hidden by default; use `--include-subagents` to show them

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for recall.py.
+"""Regression tests for memex.py.
 
 Covers: query sanitization, project matching, CJK fallback, orphan cleanup,
 subagent filtering, slug deduplication, directory checkpointing, noise filtering.
@@ -15,14 +15,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-# Add scripts dir to path so we can import recall
+# Add scripts dir to path so we can import memex
 SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 import sys
 
 sys.path.insert(0, SCRIPTS_DIR)
 
-import recall
-from recall_common import extract_text, is_noise
+import memex
+from memex_common import extract_text, is_noise
 
 
 class DBTestCase(unittest.TestCase):
@@ -30,7 +30,7 @@ class DBTestCase(unittest.TestCase):
 
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")
-        recall.create_schema(self.conn)
+        memex.create_schema(self.conn)
 
     def tearDown(self):
         self.conn.close()
@@ -57,26 +57,26 @@ class DBTestCase(unittest.TestCase):
 class TestSanitizeFtsQuery(unittest.TestCase):
 
     def test_plain_words_unchanged(self):
-        self.assertEqual(recall.sanitize_fts_query("hello world"), "hello world")
+        self.assertEqual(memex.sanitize_fts_query("hello world"), "hello world")
 
     def test_dashes_auto_quoted(self):
-        result = recall.sanitize_fts_query("local-command-caveat")
+        result = memex.sanitize_fts_query("local-command-caveat")
         self.assertEqual(result, '"local-command-caveat"')
 
     def test_explicit_fts_syntax_preserved(self):
         q = '"exact phrase" AND term'
-        self.assertEqual(recall.sanitize_fts_query(q), q)
+        self.assertEqual(memex.sanitize_fts_query(q), q)
 
     def test_prefix_syntax_preserved(self):
         q = "buffer*"
-        self.assertEqual(recall.sanitize_fts_query(q), q)
+        self.assertEqual(memex.sanitize_fts_query(q), q)
 
     def test_empty_returns_empty(self):
-        self.assertEqual(recall.sanitize_fts_query(""), "")
-        self.assertIsNone(recall.sanitize_fts_query(None))
+        self.assertEqual(memex.sanitize_fts_query(""), "")
+        self.assertIsNone(memex.sanitize_fts_query(None))
 
     def test_mixed_tokens(self):
-        result = recall.sanitize_fts_query("hello my-var world")
+        result = memex.sanitize_fts_query("hello my-var world")
         self.assertEqual(result, 'hello "my-var" world')
 
 
@@ -85,23 +85,23 @@ class TestSanitizeFtsQuery(unittest.TestCase):
 class TestProjectMatchClause(unittest.TestCase):
 
     def test_exact_match(self):
-        clause, params = recall.project_match_clause("/Users/admin/work", "s")
+        clause, params = memex.project_match_clause("/Users/admin/work", "s")
         self.assertIn("s.project = ?", clause)
         self.assertEqual(params[0], "/Users/admin/work")
 
     def test_child_path_match(self):
-        clause, params = recall.project_match_clause("/Users/admin/work", "s")
+        clause, params = memex.project_match_clause("/Users/admin/work", "s")
         self.assertIn("LIKE", clause)
         # Second param should be the prefix pattern
         self.assertTrue(params[1].endswith("/%"))
 
     def test_trailing_slash_stripped(self):
-        clause, params = recall.project_match_clause("/Users/admin/work/", "s")
+        clause, params = memex.project_match_clause("/Users/admin/work/", "s")
         self.assertEqual(params[0], "/Users/admin/work")
 
     def test_no_sibling_match(self):
         """Ensure /Users/admin/work does NOT match /Users/admin/work2."""
-        clause, params = recall.project_match_clause("/Users/admin/work", "s")
+        clause, params = memex.project_match_clause("/Users/admin/work", "s")
         # The LIKE pattern should be /Users/admin/work/% (with trailing slash)
         self.assertTrue(params[1].startswith("/Users/admin/work/"))
 
@@ -112,21 +112,21 @@ class TestProjectMatchIntegration(DBTestCase):
         self._insert_session("s1", project="/Users/admin/work")
         self._insert_messages("s1", [("user", "hello")])
 
-        results = recall.list_sessions(self.conn, project="/Users/admin/work", include_subagents=True)
+        results = memex.list_sessions(self.conn, project="/Users/admin/work", include_subagents=True)
         self.assertEqual(len(results), 1)
 
     def test_child_project_found(self):
         self._insert_session("s1", project="/Users/admin/work/subdir")
         self._insert_messages("s1", [("user", "hello")])
 
-        results = recall.list_sessions(self.conn, project="/Users/admin/work", include_subagents=True)
+        results = memex.list_sessions(self.conn, project="/Users/admin/work", include_subagents=True)
         self.assertEqual(len(results), 1)
 
     def test_sibling_project_excluded(self):
         self._insert_session("s1", project="/Users/admin/work2")
         self._insert_messages("s1", [("user", "hello")])
 
-        results = recall.list_sessions(self.conn, project="/Users/admin/work", include_subagents=True)
+        results = memex.list_sessions(self.conn, project="/Users/admin/work", include_subagents=True)
         self.assertEqual(len(results), 0)
 
 
@@ -136,24 +136,24 @@ class TestInferProjectFromPath(unittest.TestCase):
 
     def test_standard_path(self):
         path = "/Users/test/.claude/projects/-Users-test-myproject/session.jsonl"
-        self.assertEqual(recall.infer_project_from_path(path), "/Users/test/myproject")
+        self.assertEqual(memex.infer_project_from_path(path), "/Users/test/myproject")
 
     def test_nested_path(self):
         path = "/Users/admin/.claude/projects/-Users-admin-work/session.jsonl"
-        self.assertEqual(recall.infer_project_from_path(path), "/Users/admin/work")
+        self.assertEqual(memex.infer_project_from_path(path), "/Users/admin/work")
 
     def test_no_match(self):
-        self.assertEqual(recall.infer_project_from_path("/tmp/session.jsonl"), "")
+        self.assertEqual(memex.infer_project_from_path("/tmp/session.jsonl"), "")
 
     def test_none_input(self):
-        self.assertEqual(recall.infer_project_from_path(None), "")
+        self.assertEqual(memex.infer_project_from_path(None), "")
 
 
 class TestNormalizeProjectPath(unittest.TestCase):
 
     def test_trailing_slash_removed(self):
         self.assertEqual(
-            recall.normalize_project_path("/Users/admin/work/"),
+            memex.normalize_project_path("/Users/admin/work/"),
             "/Users/admin/work",
         )
 
@@ -164,7 +164,7 @@ class TestNormalizeProjectPath(unittest.TestCase):
             real_dir.mkdir()
             os.symlink(real_dir, link_dir)
             self.assertEqual(
-                recall.normalize_project_path(str(link_dir)),
+                memex.normalize_project_path(str(link_dir)),
                 os.path.realpath(str(real_dir)),
             )
 
@@ -172,15 +172,15 @@ class TestNormalizeProjectPath(unittest.TestCase):
 class TestResumeCommand(unittest.TestCase):
 
     def test_claude_resume_command(self):
-        cmd = recall.build_resume_command("claude", "/tmp/my project", "abc-123")
+        cmd = memex.build_resume_command("claude", "/tmp/my project", "abc-123")
         self.assertEqual(cmd, "cd '/tmp/my project' && claude --resume abc-123")
 
     def test_codex_resume_command(self):
-        cmd = recall.build_resume_command("codex", "/tmp/work", "sid")
+        cmd = memex.build_resume_command("codex", "/tmp/work", "sid")
         self.assertEqual(cmd, "cd /tmp/work && codex resume sid")
 
     def test_unknown_source(self):
-        self.assertEqual(recall.build_resume_command("unknown", "/tmp", "sid"), "")
+        self.assertEqual(memex.build_resume_command("unknown", "/tmp", "sid"), "")
 
 
 class TestResultSerialization(unittest.TestCase):
@@ -197,7 +197,7 @@ class TestResultSerialization(unittest.TestCase):
             0.0,
             "a" * 40,
         )
-        result = recall.result_to_dict(row, summary_len=10, include_summary=True)
+        result = memex.result_to_dict(row, summary_len=10, include_summary=True)
         self.assertEqual(result["summary"], "aaaaaaa...")
         self.assertEqual(result["resume_command"], "cd /tmp/work && codex resume sid-1234")
 
@@ -213,7 +213,7 @@ class TestResultSerialization(unittest.TestCase):
             0.0,
             "hello world",
         )
-        result = recall.result_to_dict(row, summary_len=20, include_summary=False)
+        result = memex.result_to_dict(row, summary_len=20, include_summary=False)
         self.assertEqual(result["summary"], "")
 
 
@@ -222,17 +222,17 @@ class TestResultSerialization(unittest.TestCase):
 class TestCJKHelpers(unittest.TestCase):
 
     def test_contains_cjk_chinese(self):
-        self.assertTrue(recall.contains_cjk("测试"))
+        self.assertTrue(memex.contains_cjk("测试"))
 
     def test_contains_cjk_english(self):
-        self.assertFalse(recall.contains_cjk("test"))
+        self.assertFalse(memex.contains_cjk("test"))
 
     def test_extract_cjk_terms(self):
-        terms = recall.extract_cjk_terms("hello 你好 world 世界")
+        terms = memex.extract_cjk_terms("hello 你好 world 世界")
         self.assertEqual(terms, ["你好", "世界"])
 
     def test_extract_cjk_dedup(self):
-        terms = recall.extract_cjk_terms("你好 test 你好")
+        terms = memex.extract_cjk_terms("你好 test 你好")
         self.assertEqual(terms, ["你好"])
 
 
@@ -242,7 +242,7 @@ class TestCJKFallbackSearch(DBTestCase):
         self._insert_session("s1", project="/test")
         self._insert_messages("s1", [("user", "讨论WebSocket重连策略")])
 
-        results = recall.search_cjk_fallback(self.conn, "重连", include_subagents=True)
+        results = memex.search_cjk_fallback(self.conn, "重连", include_subagents=True)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0][0], "s1")
 
@@ -250,7 +250,7 @@ class TestCJKFallbackSearch(DBTestCase):
         self._insert_session("s1", project="/test")
         self._insert_messages("s1", [("user", "讨论WebSocket")])
 
-        results = recall.search_cjk_fallback(self.conn, "数据库", include_subagents=True)
+        results = memex.search_cjk_fallback(self.conn, "数据库", include_subagents=True)
         self.assertEqual(len(results), 0)
 
 
@@ -262,7 +262,7 @@ class TestLikeFallback(DBTestCase):
         self._insert_session("s1", project="/test")
         self._insert_messages("s1", [("user", "check local-command-caveat handling")])
 
-        results = recall.search_like_fallback(
+        results = memex.search_like_fallback(
             self.conn, "local-command-caveat", include_subagents=True
         )
         self.assertEqual(len(results), 1)
@@ -271,7 +271,7 @@ class TestLikeFallback(DBTestCase):
         self._insert_session("s1", project="/test")
         self._insert_messages("s1", [("user", "100% done")])
 
-        results = recall.search_like_fallback(self.conn, "100%", include_subagents=True)
+        results = memex.search_like_fallback(self.conn, "100%", include_subagents=True)
         self.assertEqual(len(results), 1)
 
 
@@ -280,13 +280,13 @@ class TestLikeFallback(DBTestCase):
 class TestEscapeLike(unittest.TestCase):
 
     def test_percent_escaped(self):
-        self.assertIn("\\%", recall.escape_like("100%"))
+        self.assertIn("\\%", memex.escape_like("100%"))
 
     def test_underscore_escaped(self):
-        self.assertIn("\\_", recall.escape_like("my_var"))
+        self.assertIn("\\_", memex.escape_like("my_var"))
 
     def test_plain_unchanged(self):
-        self.assertEqual(recall.escape_like("hello"), "hello")
+        self.assertEqual(memex.escape_like("hello"), "hello")
 
 
 # ── Subagent filtering ────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@ class TestSubagentFiltering(DBTestCase):
         self._insert_session("sub1", project="/test", is_subagent=1, parent_session_id="parent1")
         self._insert_messages("sub1", [("user", "subtask")])
 
-        results = recall.list_sessions(self.conn, include_subagents=False)
+        results = memex.list_sessions(self.conn, include_subagents=False)
         session_ids = [r[0] for r in results]
         self.assertIn("parent1", session_ids)
         self.assertNotIn("sub1", session_ids)
@@ -310,7 +310,7 @@ class TestSubagentFiltering(DBTestCase):
         self._insert_session("sub1", project="/test", is_subagent=1, parent_session_id="parent1")
         self._insert_messages("sub1", [("user", "subtask")])
 
-        results = recall.list_sessions(self.conn, include_subagents=True)
+        results = memex.list_sessions(self.conn, include_subagents=True)
         session_ids = [r[0] for r in results]
         self.assertIn("parent1", session_ids)
         self.assertIn("sub1", session_ids)
@@ -320,11 +320,11 @@ class TestSubagentDetection(unittest.TestCase):
 
     def test_subagent_path(self):
         path = "/Users/test/.claude/projects/-Users-test-work/abc123/subagents/agent-def456.jsonl"
-        self.assertEqual(recall.subagent_parent_session_id(path), "abc123")
+        self.assertEqual(memex.subagent_parent_session_id(path), "abc123")
 
     def test_normal_path(self):
         path = "/Users/test/.claude/projects/-Users-test-work/session.jsonl"
-        self.assertIsNone(recall.subagent_parent_session_id(path))
+        self.assertIsNone(memex.subagent_parent_session_id(path))
 
 
 # ── Orphan cleanup ────────────────────────────────────────────────────────────
@@ -336,7 +336,7 @@ class TestOrphanCleanup(DBTestCase):
         self._insert_session("orphan1", file_path="/nonexistent/path.jsonl")
         self._insert_messages("orphan1", [("user", "old")])
 
-        count = recall.prune_orphan_sessions(self.conn)
+        count = memex.prune_orphan_sessions(self.conn)
         self.assertEqual(count, 1)
 
         remaining = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -352,7 +352,7 @@ class TestOrphanCleanup(DBTestCase):
             self._insert_session("real1", file_path=existing_path)
             self._insert_messages("real1", [("user", "current")])
 
-            count = recall.prune_orphan_sessions(self.conn)
+            count = memex.prune_orphan_sessions(self.conn)
             self.assertEqual(count, 0)
 
             remaining = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -370,7 +370,7 @@ class TestSlugDeduplication(unittest.TestCase):
             ("sess-aaa11111", "claude", "", "/test", "slug-a", 1000, "", 0.0, ""),
             ("sess-bbb22222", "claude", "", "/test", "slug-b", 1000, "", 0.0, ""),
         ]
-        slugs = recall.deduplicate_slugs(results)
+        slugs = memex.deduplicate_slugs(results)
         self.assertEqual(slugs["sess-aaa11111"], "slug-a")
         self.assertEqual(slugs["sess-bbb22222"], "slug-b")
 
@@ -379,7 +379,7 @@ class TestSlugDeduplication(unittest.TestCase):
             ("sess-aaa11111", "claude", "", "/test", "same-slug", 1000, "", 0.0, ""),
             ("sess-bbb22222", "claude", "", "/test", "same-slug", 1000, "", 0.0, ""),
         ]
-        slugs = recall.deduplicate_slugs(results)
+        slugs = memex.deduplicate_slugs(results)
         self.assertIn("aaa11111", slugs["sess-aaa11111"])
         self.assertIn("bbb22222", slugs["sess-bbb22222"])
         self.assertNotEqual(slugs["sess-aaa11111"], slugs["sess-bbb22222"])
@@ -390,7 +390,7 @@ class TestSlugDeduplication(unittest.TestCase):
             ("sess-bbb22222", "claude", "", "/test", "dup", 1000, "", 0.0, ""),
             ("sess-ccc33333", "claude", "", "/test", "unique", 1000, "", 0.0, ""),
         ]
-        slugs = recall.deduplicate_slugs(results)
+        slugs = memex.deduplicate_slugs(results)
         self.assertEqual(slugs["sess-ccc33333"], "unique")
         self.assertIn("aaa11111", slugs["sess-aaa11111"])
 
@@ -422,7 +422,7 @@ class TestNoiseFiltering(unittest.TestCase):
         self.assertTrue(is_noise('Tool result of `get_variables`. Calling `get_variables` is not necessary anymore.'))
 
     def test_unknown_skill_is_noise(self):
-        self.assertTrue(is_noise("Unknown skill: recall"))
+        self.assertTrue(is_noise("Unknown skill: memex"))
         self.assertTrue(is_noise("Unknown skill: ralph-loop"))
 
     def test_mcp_tool_result_not_used_as_summary(self):
@@ -439,7 +439,7 @@ class TestNoiseFiltering(unittest.TestCase):
                 f.write(_json.dumps(entry) + "\n")
             path = f.name
         try:
-            result = recall.parse_claude_session(path)
+            result = memex.parse_claude_session(path)
             self.assertIsNotNone(result)
             metadata, messages = result
             self.assertEqual(metadata["summary"], "fix the login bug")
@@ -476,18 +476,18 @@ class TestFormatTimestamp(unittest.TestCase):
 
     def test_date_only(self):
         ts_ms = 1709510400000  # 2024-03-04 approx
-        result = recall.format_timestamp(ts_ms)
+        result = memex.format_timestamp(ts_ms)
         self.assertRegex(result, r"\d{4}-\d{2}-\d{2}")
         self.assertNotIn(":", result)
 
     def test_precise_includes_time(self):
         ts_ms = 1709510400000
-        result = recall.format_timestamp(ts_ms, precise=True)
+        result = memex.format_timestamp(ts_ms, precise=True)
         self.assertIn(":", result)
 
     def test_zero_returns_unknown(self):
-        self.assertEqual(recall.format_timestamp(0), "unknown")
-        self.assertEqual(recall.format_timestamp(None), "unknown")
+        self.assertEqual(memex.format_timestamp(0), "unknown")
+        self.assertEqual(memex.format_timestamp(None), "unknown")
 
 
 # ── make_excerpt ──────────────────────────────────────────────────────────────
@@ -495,17 +495,17 @@ class TestFormatTimestamp(unittest.TestCase):
 class TestMakeExcerpt(unittest.TestCase):
 
     def test_short_text_unchanged(self):
-        self.assertEqual(recall.make_excerpt("hello world"), "hello world")
+        self.assertEqual(memex.make_excerpt("hello world"), "hello world")
 
     def test_long_text_truncated(self):
         text = "a" * 300
-        result = recall.make_excerpt(text)
+        result = memex.make_excerpt(text)
         self.assertTrue(result.endswith("..."))
         self.assertLessEqual(len(result), 210)
 
     def test_needle_centering(self):
         text = "x" * 200 + "NEEDLE" + "y" * 200
-        result = recall.make_excerpt(text, "NEEDLE")
+        result = memex.make_excerpt(text, "NEEDLE")
         self.assertIn("NEEDLE", result)
 
 
@@ -528,13 +528,13 @@ class TestDirCheckpoint(DBTestCase):
                 f.write('{"type":"user","role":"user","message":{"content":"hello"}}\n')
 
             # First collection should find the file
-            files1 = recall._collect_files_with_dir_checkpoint(
+            files1 = memex._collect_files_with_dir_checkpoint(
                 self.conn, Path(tmpdir), "claude", force=False
             )
             self.assertEqual(len(files1), 1)
 
             # Second collection should skip (dir mtime unchanged)
-            files2 = recall._collect_files_with_dir_checkpoint(
+            files2 = memex._collect_files_with_dir_checkpoint(
                 self.conn, Path(tmpdir), "claude", force=False
             )
             self.assertEqual(len(files2), 0)
@@ -546,18 +546,18 @@ class TestDirCheckpoint(DBTestCase):
                 f.write('{"type":"user","role":"user","message":{"content":"hello"}}\n')
 
             # First run
-            recall._collect_files_with_dir_checkpoint(
+            memex._collect_files_with_dir_checkpoint(
                 self.conn, Path(tmpdir), "claude", force=False
             )
 
             # Force should find the file again
-            files = recall._collect_files_with_dir_checkpoint(
+            files = memex._collect_files_with_dir_checkpoint(
                 self.conn, Path(tmpdir), "claude", force=True
             )
             self.assertEqual(len(files), 1)
 
     def test_nonexistent_dir(self):
-        files = recall._collect_files_with_dir_checkpoint(
+        files = memex._collect_files_with_dir_checkpoint(
             self.conn, Path("/nonexistent/dir"), "claude", force=False
         )
         self.assertEqual(len(files), 0)
@@ -578,7 +578,7 @@ class TestClaudeSessionParser(unittest.TestCase):
             path = f.name
 
         try:
-            result = recall.parse_claude_session(path)
+            result = memex.parse_claude_session(path)
             self.assertIsNotNone(result)
             metadata, messages = result
             self.assertEqual(len(messages), 2)
@@ -597,7 +597,7 @@ class TestClaudeSessionParser(unittest.TestCase):
             path = f.name
 
         try:
-            result = recall.parse_claude_session(path)
+            result = memex.parse_claude_session(path)
             metadata, messages = result
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0][1], "real question")
@@ -613,7 +613,7 @@ class TestConcurrentSafety(unittest.TestCase):
     def test_begin_immediate_used(self):
         """Verify that the main function pattern uses BEGIN IMMEDIATE for writes."""
         import inspect
-        source = inspect.getsource(recall.main)
+        source = inspect.getsource(memex.main)
         self.assertIn("BEGIN IMMEDIATE", source)
 
 
@@ -622,18 +622,18 @@ class TestConcurrentSafety(unittest.TestCase):
 class TestParseIsoTimestamp(unittest.TestCase):
 
     def test_z_suffix(self):
-        ts = recall.parse_iso_timestamp("2026-03-04T10:00:00.000Z")
+        ts = memex.parse_iso_timestamp("2026-03-04T10:00:00.000Z")
         self.assertIsNotNone(ts)
         self.assertIsInstance(ts, int)
 
     def test_numeric_passthrough(self):
-        self.assertEqual(recall.parse_iso_timestamp(1234567890000), 1234567890000)
+        self.assertEqual(memex.parse_iso_timestamp(1234567890000), 1234567890000)
 
     def test_none_returns_none(self):
-        self.assertIsNone(recall.parse_iso_timestamp(None))
+        self.assertIsNone(memex.parse_iso_timestamp(None))
 
     def test_invalid_returns_none(self):
-        self.assertIsNone(recall.parse_iso_timestamp("not a date"))
+        self.assertIsNone(memex.parse_iso_timestamp("not a date"))
 
 
 # ── Schema migration ─────────────────────────────────────────────────────────
@@ -661,7 +661,7 @@ class TestSchemaMigration(unittest.TestCase):
         """)
 
         # Should not raise
-        recall.migrate_schema(conn)
+        memex.migrate_schema(conn)
 
         # Verify new columns exist
         conn.execute("SELECT summary, is_subagent, parent_session_id FROM sessions LIMIT 1")
@@ -671,13 +671,13 @@ class TestSchemaMigration(unittest.TestCase):
 class TestVersionHelpers(unittest.TestCase):
 
     def test_build_version_payload_without_db(self):
-        with patch.object(recall, "DB_PATH", Path("/tmp/nonexistent-recall-db.sqlite")), \
-             patch.object(recall, "detect_commit_sha", return_value="abc1234"):
-            payload = recall.build_version_payload()
-        self.assertEqual(payload["name"], "recall")
+        with patch.object(memex, "DB_PATH", Path("/tmp/nonexistent-memex-db.sqlite")), \
+             patch.object(memex, "detect_commit_sha", return_value="abc1234"):
+            payload = memex.build_version_payload()
+        self.assertEqual(payload["name"], "memex")
         self.assertEqual(payload["owner"], "awesome-skills")
-        self.assertEqual(payload["version"], recall.SKILL_VERSION)
-        self.assertEqual(payload["schema_version"], recall.SCHEMA_VERSION)
+        self.assertEqual(payload["version"], memex.SKILL_VERSION)
+        self.assertEqual(payload["schema_version"], memex.SCHEMA_VERSION)
         self.assertEqual(payload["commit"], "abc1234")
         self.assertFalse(payload["db_exists"])
         self.assertIsNone(payload["db_schema_version"])
@@ -690,7 +690,7 @@ class TestVersionHelpers(unittest.TestCase):
             conn.execute("PRAGMA user_version = 7")
             conn.commit()
             conn.close()
-            self.assertEqual(recall.read_db_schema_version(db_path), 7)
+            self.assertEqual(memex.read_db_schema_version(db_path), 7)
         finally:
             if db_path.exists():
                 db_path.unlink()
@@ -701,8 +701,8 @@ class TestDoctorPayload(DBTestCase):
     def test_doctor_payload_contains_expected_fields(self):
         self._insert_session("s1", source="codex", summary="hello")
         self._insert_messages("s1", [("user", "hello")])
-        payload = recall.build_doctor_payload(self.conn)
-        self.assertEqual(payload["name"], "recall")
+        payload = memex.build_doctor_payload(self.conn)
+        self.assertEqual(payload["name"], "memex")
         self.assertIn("checks", payload)
         self.assertIn("index", payload)
         self.assertEqual(payload["index"]["total_sessions"], 1)
@@ -735,12 +735,12 @@ class TestDoctorFixes(DBTestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(recall, "CLAUDE_PROJECTS_DIR", claude_dir), patch.object(
-                recall, "CODEX_SESSIONS_DIR", codex_dir
+            with patch.object(memex, "CLAUDE_PROJECTS_DIR", claude_dir), patch.object(
+                memex, "CODEX_SESSIONS_DIR", codex_dir
             ):
-                payload = recall.build_doctor_payload(self.conn)
-                actions = recall.apply_doctor_fixes(self.conn, payload)
-                refreshed = recall.build_doctor_payload(self.conn, fix_applied=True, actions=actions)
+                payload = memex.build_doctor_payload(self.conn)
+                actions = memex.apply_doctor_fixes(self.conn, payload)
+                refreshed = memex.build_doctor_payload(self.conn, fix_applied=True, actions=actions)
 
             self.assertGreaterEqual(refreshed["index"]["total_sessions"], 1)
             self.assertTrue(refreshed["actions"])
@@ -761,7 +761,7 @@ class TestRecencyRanking(DBTestCase):
         self._insert_session("new-session", timestamp=new_ts)
         self._insert_messages("new-session", [("user", "websocket reconnect strategy")])
 
-        results = recall.search(self.conn, "websocket reconnect", include_subagents=True)
+        results = memex.search(self.conn, "websocket reconnect", include_subagents=True)
         self.assertEqual(len(results), 2)
         # Recent session should appear first (lower blended rank)
         self.assertEqual(results[0][0], "new-session")
@@ -784,10 +784,10 @@ class TestIncrementalIndexFileUpdate(DBTestCase):
                 }) + "\n")
 
             claude_dir = Path(tmpdir)
-            with patch.object(recall, "CLAUDE_PROJECTS_DIR", claude_dir), \
-                 patch.object(recall, "CODEX_SESSIONS_DIR", Path("/nonexistent")):
+            with patch.object(memex, "CLAUDE_PROJECTS_DIR", claude_dir), \
+                 patch.object(memex, "CODEX_SESSIONS_DIR", Path("/nonexistent")):
                 # First full index
-                recall.index_sessions(self.conn, force=True)
+                memex.index_sessions(self.conn, force=True)
                 msgs1 = self.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
 
                 # Append new content — preserve dir mtime to simulate the bug
@@ -801,7 +801,7 @@ class TestIncrementalIndexFileUpdate(DBTestCase):
                 os.utime(tmpdir, (dir_stat.st_atime, dir_stat.st_mtime))
 
                 # Incremental index should still detect the file change
-                recall.index_sessions(self.conn, force=False)
+                memex.index_sessions(self.conn, force=False)
                 msgs2 = self.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
 
             self.assertGreater(msgs2, msgs1)
@@ -818,8 +818,8 @@ class TestListFTSFallback(DBTestCase):
         self._insert_messages("s1", [("user", "deploy kubernetes cluster")])
 
         # Force FTS error by making sanitize_fts_query return invalid syntax
-        with patch.object(recall, "sanitize_fts_query", return_value="NEAR(broken"):
-            results = recall.list_sessions(
+        with patch.object(memex, "sanitize_fts_query", return_value="NEAR(broken"):
+            results = memex.list_sessions(
                 self.conn, query="deploy", include_subagents=True,
             )
         # Should find the result via LIKE fallback instead of returning empty
@@ -870,7 +870,7 @@ class TestCodexSessionParser(unittest.TestCase):
                 for entry in entries:
                     f.write(json.dumps(entry) + "\n")
 
-            result = recall.parse_codex_session(path)
+            result = memex.parse_codex_session(path)
             self.assertIsNotNone(result)
             metadata, messages = result
             self.assertEqual(metadata["source"], "codex")
@@ -898,12 +898,12 @@ class TestCodexSessionParser(unittest.TestCase):
                 for entry in entries:
                     f.write(json.dumps(entry) + "\n")
 
-            result = recall.parse_codex_session(path)
+            result = memex.parse_codex_session(path)
             self.assertIsNotNone(result)
             metadata, messages = result
             self.assertEqual(metadata["source"], "codex")
             self.assertEqual(metadata["session_id"], "my-session")
-            self.assertEqual(metadata["project"], recall.normalize_project_path("/tmp/test"))
+            self.assertEqual(metadata["project"], memex.normalize_project_path("/tmp/test"))
             self.assertEqual(len(messages), 2)
             self.assertEqual(metadata["summary"], "hello")
         finally:
@@ -922,7 +922,7 @@ class TestCodexSessionParser(unittest.TestCase):
             path = f.name
 
         try:
-            result = recall.parse_codex_session(path)
+            result = memex.parse_codex_session(path)
             self.assertIsNotNone(result)
             metadata, messages = result
             self.assertEqual(len(messages), 1)
@@ -942,7 +942,7 @@ class TestCodexSessionParser(unittest.TestCase):
             path = f.name
 
         try:
-            result = recall.parse_codex_session(path)
+            result = memex.parse_codex_session(path)
             metadata, messages = result
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0][1], "real question")
@@ -964,7 +964,7 @@ class TestCodexSessionParser(unittest.TestCase):
             path = f.name
 
         try:
-            result = recall.parse_codex_session(path)
+            result = memex.parse_codex_session(path)
             metadata, messages = result
             self.assertEqual(len(messages), 1)
         finally:
@@ -984,11 +984,11 @@ class TestCodexSessionParser(unittest.TestCase):
             path = f.name
 
         try:
-            result = recall.parse_codex_session(path)
+            result = memex.parse_codex_session(path)
             metadata, messages = result
             self.assertIsNotNone(metadata["timestamp"])
             # Earlier timestamp should be selected
-            earlier_ts = recall.parse_iso_timestamp("2026-03-04T10:00:00Z")
+            earlier_ts = memex.parse_iso_timestamp("2026-03-04T10:00:00Z")
             self.assertEqual(metadata["timestamp"], earlier_ts)
         finally:
             os.unlink(path)
@@ -1003,7 +1003,7 @@ class TestCLIEndToEnd(DBTestCase):
         self._insert_session("s1", project="/test/proj", summary="hello world")
         self._insert_messages("s1", [("user", "hello world search term")])
 
-        results = recall.search(self.conn, "hello", include_subagents=True)
+        results = memex.search(self.conn, "hello", include_subagents=True)
         self.assertGreaterEqual(len(results), 1)
         self.assertEqual(results[0][0], "s1")
 
@@ -1011,11 +1011,11 @@ class TestCLIEndToEnd(DBTestCase):
         self._insert_session("s1", project="/test", source="claude", summary="test summary")
         self._insert_messages("s1", [("user", "hello search term")])
 
-        results = recall.search(self.conn, "hello", include_subagents=True)
+        results = memex.search(self.conn, "hello", include_subagents=True)
         self.assertGreaterEqual(len(results), 1)
 
-        display_slugs = recall.deduplicate_slugs(results)
-        result_dict = recall.result_to_dict(results[0], display_slugs.get(results[0][0]))
+        display_slugs = memex.deduplicate_slugs(results)
+        result_dict = memex.result_to_dict(results[0], display_slugs.get(results[0][0]))
 
         expected_fields = [
             "session_id", "source", "file_path", "project", "slug",
@@ -1031,8 +1031,8 @@ class TestCLIEndToEnd(DBTestCase):
             self._insert_session(f"s{i}", timestamp=ts)
             self._insert_messages(f"s{i}", [("user", f"message {i}")])
 
-        page1 = recall.list_sessions(self.conn, limit=2, offset=0, include_subagents=True)
-        page2 = recall.list_sessions(self.conn, limit=2, offset=2, include_subagents=True)
+        page1 = memex.list_sessions(self.conn, limit=2, offset=0, include_subagents=True)
+        page2 = memex.list_sessions(self.conn, limit=2, offset=2, include_subagents=True)
 
         self.assertEqual(len(page1), 2)
         self.assertEqual(len(page2), 2)
@@ -1041,7 +1041,7 @@ class TestCLIEndToEnd(DBTestCase):
         self.assertEqual(len(ids1 & ids2), 0)
 
     def test_doctor_payload_has_suggestions(self):
-        payload = recall.build_doctor_payload(self.conn)
+        payload = memex.build_doctor_payload(self.conn)
         self.assertIn("suggestions", payload)
         # Empty index should suggest reindex
         self.assertTrue(any("reindex" in s.lower() for s in payload["suggestions"]))
@@ -1049,7 +1049,7 @@ class TestCLIEndToEnd(DBTestCase):
     def test_main_uses_busy_timeout(self):
         """Verify main() sets busy_timeout."""
         import inspect
-        source = inspect.getsource(recall.main)
+        source = inspect.getsource(memex.main)
         self.assertIn("busy_timeout", source)
 
 
@@ -1065,10 +1065,10 @@ class TestSearchOffset(DBTestCase):
             self._insert_session(f"s{i}", timestamp=ts)
             self._insert_messages(f"s{i}", [("user", "common search keyword")])
 
-        all_results = recall.search(
+        all_results = memex.search(
             self.conn, "common search keyword", limit=5, include_subagents=True,
         )
-        offset_results = recall.search(
+        offset_results = memex.search(
             self.conn, "common search keyword", limit=3, offset=2, include_subagents=True,
         )
 
@@ -1090,7 +1090,7 @@ class TestVersionConsistency(unittest.TestCase):
         import re
         match = re.search(r'version:\s*"([^"]+)"', content)
         self.assertIsNotNone(match, "Could not find version in SKILL.md")
-        self.assertEqual(match.group(1), recall.SKILL_VERSION)
+        self.assertEqual(match.group(1), memex.SKILL_VERSION)
 
 
 # ── Fallback pagination ──────────────────────────────────────────────────
@@ -1104,10 +1104,10 @@ class TestFallbackPagination(DBTestCase):
             self._insert_session(f"s{i}", timestamp=ts)
             self._insert_messages(f"s{i}", [("user", f"unique-special-term item {i}")])
 
-        page1 = recall.search_like_fallback(
+        page1 = memex.search_like_fallback(
             self.conn, "unique-special-term", limit=2, offset=0, include_subagents=True,
         )
-        page2 = recall.search_like_fallback(
+        page2 = memex.search_like_fallback(
             self.conn, "unique-special-term", limit=2, offset=2, include_subagents=True,
         )
         self.assertEqual(len(page1), 2)
@@ -1122,10 +1122,10 @@ class TestFallbackPagination(DBTestCase):
             self._insert_session(f"s{i}", timestamp=ts)
             self._insert_messages(f"s{i}", [("user", f"讨论数据库迁移策略 第{i}次")])
 
-        page1 = recall.search_cjk_fallback(
+        page1 = memex.search_cjk_fallback(
             self.conn, "数据库", limit=2, offset=0, include_subagents=True,
         )
-        page2 = recall.search_cjk_fallback(
+        page2 = memex.search_cjk_fallback(
             self.conn, "数据库", limit=2, offset=2, include_subagents=True,
         )
         self.assertEqual(len(page1), 2)
@@ -1148,14 +1148,14 @@ class TestInferProjectDash(unittest.TestCase):
             real_project = os.path.realpath(project_dir)
             encoded = real_project.lstrip("/").replace("/", "-")
             file_path = f"/x/.claude/projects/-{encoded}/session.jsonl"
-            result = recall.infer_project_from_path(file_path)
+            result = memex.infer_project_from_path(file_path)
             self.assertEqual(result, real_project)
 
     def test_naive_fallback_when_path_absent(self):
         """When no directories exist to validate, fall back to naive slash decode."""
         path = "/Users/test/.claude/projects/-Users-test-myproject/session.jsonl"
         # Should still produce /Users/test/myproject (same as before)
-        self.assertEqual(recall.infer_project_from_path(path), "/Users/test/myproject")
+        self.assertEqual(memex.infer_project_from_path(path), "/Users/test/myproject")
 
     def test_multiple_dashed_segments(self):
         """Multiple directory levels with dashes should all be preserved."""
@@ -1165,7 +1165,7 @@ class TestInferProjectDash(unittest.TestCase):
             real_path = os.path.realpath(nested)
             encoded = real_path.lstrip("/").replace("/", "-")
             file_path = f"/x/.claude/projects/-{encoded}/session.jsonl"
-            result = recall.infer_project_from_path(file_path)
+            result = memex.infer_project_from_path(file_path)
             self.assertEqual(result, real_path)
 
     def test_ambiguous_path_prefers_more_segments(self):
@@ -1178,7 +1178,7 @@ class TestInferProjectDash(unittest.TestCase):
             # Both paths produce the same encoding: tmpdir-a-b-c
             encoded = real_abc.lstrip("/").replace("/", "-")
             file_path = f"/x/.claude/projects/-{encoded}/session.jsonl"
-            result = recall.infer_project_from_path(file_path)
+            result = memex.infer_project_from_path(file_path)
             self.assertEqual(result, real_abc, "Should prefer /a/b/c over /a/b-c")
 
     def test_ambiguous_path_inherent_limitation(self):
@@ -1195,7 +1195,7 @@ class TestInferProjectDash(unittest.TestCase):
             real_ab_c = os.path.realpath(os.path.join(tmpdir, "a-b", "c"))
             encoded = real_ab_c.lstrip("/").replace("/", "-")
             file_path = f"/x/.claude/projects/-{encoded}/session.jsonl"
-            result = recall.infer_project_from_path(file_path)
+            result = memex.infer_project_from_path(file_path)
             # Shortest-match-first picks /a/b/c — this is the known tradeoff
             expected = os.path.realpath(os.path.join(tmpdir, "a", "b", "c"))
             self.assertEqual(result, expected)
@@ -1209,7 +1209,7 @@ class TestPruneOrphanRateLimit(DBTestCase):
     def test_direct_prune_always_works(self):
         """prune_orphan_sessions always scans regardless of rate-limit state."""
         # First call — records timestamp
-        recall.prune_orphan_sessions(self.conn)
+        memex.prune_orphan_sessions(self.conn)
 
         # Insert an orphan immediately after
         self.conn.execute(
@@ -1219,7 +1219,7 @@ class TestPruneOrphanRateLimit(DBTestCase):
         self.conn.commit()
 
         # Direct prune should always remove orphans (no rate-limiting)
-        result = recall.prune_orphan_sessions(self.conn)
+        result = memex.prune_orphan_sessions(self.conn)
         self.assertEqual(result, 1)
         count = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         self.assertEqual(count, 0)
@@ -1227,22 +1227,22 @@ class TestPruneOrphanRateLimit(DBTestCase):
     def test_index_sessions_skips_prune_within_interval(self):
         """index_sessions rate-limits prune via _should_skip_prune."""
         # Record a recent prune timestamp
-        recall._record_prune_timestamp(self.conn)
+        memex._record_prune_timestamp(self.conn)
         self.conn.commit()
 
         # _should_skip_prune should return True
-        self.assertTrue(recall._should_skip_prune(self.conn))
+        self.assertTrue(memex._should_skip_prune(self.conn))
 
     def test_index_sessions_allows_prune_after_interval(self):
         """_should_skip_prune returns False after interval expires."""
-        past = time.time() - recall._PRUNE_INTERVAL_SECONDS - 1
+        past = time.time() - memex._PRUNE_INTERVAL_SECONDS - 1
         self.conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('_prune_last_run', ?)",
             (str(past),),
         )
         self.conn.commit()
 
-        self.assertFalse(recall._should_skip_prune(self.conn))
+        self.assertFalse(memex._should_skip_prune(self.conn))
 
     def test_corrupted_metadata_does_not_crash(self):
         """Non-numeric _prune_last_run value should not raise."""
@@ -1251,7 +1251,7 @@ class TestPruneOrphanRateLimit(DBTestCase):
         )
         self.conn.commit()
         # Should return False (proceed with prune), not raise ValueError
-        self.assertFalse(recall._should_skip_prune(self.conn))
+        self.assertFalse(memex._should_skip_prune(self.conn))
 
 
 # ── Doctor --fix with stale checkpoints ───────────────────────────────────
@@ -1280,11 +1280,11 @@ class TestDoctorFixForceReindex(DBTestCase):
             )
             self.conn.commit()
 
-            with patch.object(recall, "CLAUDE_PROJECTS_DIR", claude_dir), \
-                 patch.object(recall, "CODEX_SESSIONS_DIR", codex_dir):
-                payload = recall.build_doctor_payload(self.conn)
-                actions = recall.apply_doctor_fixes(self.conn, payload)
-                refreshed = recall.build_doctor_payload(
+            with patch.object(memex, "CLAUDE_PROJECTS_DIR", claude_dir), \
+                 patch.object(memex, "CODEX_SESSIONS_DIR", codex_dir):
+                payload = memex.build_doctor_payload(self.conn)
+                actions = memex.apply_doctor_fixes(self.conn, payload)
+                refreshed = memex.build_doctor_payload(
                     self.conn, fix_applied=True, actions=actions,
                 )
 
@@ -1303,7 +1303,7 @@ class TestDailyReport(DBTestCase):
         return int(dt(today.year, today.month, today.day, hour, 0, 0).timestamp() * 1000)
 
     def test_empty_returns_zero_sessions(self):
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         self.assertEqual(result["total_sessions"], 0)
         self.assertEqual(result["projects"], [])
         self.assertEqual(result["sources"], {"claude": 0, "codex": 0})
@@ -1311,7 +1311,7 @@ class TestDailyReport(DBTestCase):
     def test_today_sessions_included(self):
         self._insert_session("s1", project="/work/proj", timestamp=self._today_ms(9))
         self._insert_messages("s1", [("user", "fix the bug"), ("assistant", "sure"), ("user", "thanks")])
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         self.assertEqual(result["total_sessions"], 1)
         session = result["projects"][0]["sessions"][0]
         self.assertEqual(session["session_id"], "s1")
@@ -1321,7 +1321,7 @@ class TestDailyReport(DBTestCase):
     def test_yesterday_sessions_excluded(self):
         yesterday_ms = self._today_ms(10) - 86400 * 1000
         self._insert_session("s_old", timestamp=yesterday_ms)
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         self.assertEqual(result["total_sessions"], 0)
 
     def test_specified_date(self):
@@ -1329,19 +1329,19 @@ class TestDailyReport(DBTestCase):
         self._insert_session("s_yest", timestamp=yesterday_ms)
         from datetime import datetime as dt, timedelta
         yesterday_str = (dt.today().date() - timedelta(days=1)).isoformat()
-        result = recall.build_daily_report(self.conn, date_str=yesterday_str)
+        result = memex.build_daily_report(self.conn, date_str=yesterday_str)
         self.assertEqual(result["total_sessions"], 1)
         self.assertEqual(result["date"], yesterday_str)
 
     def test_invalid_date_exits(self):
         with self.assertRaises(SystemExit):
-            recall.build_daily_report(self.conn, date_str="not-a-date")
+            memex.build_daily_report(self.conn, date_str="not-a-date")
 
     def test_grouped_by_project(self):
         self._insert_session("s1", project="/proj/a", timestamp=self._today_ms(9))
         self._insert_session("s2", project="/proj/b", timestamp=self._today_ms(10))
         self._insert_session("s3", project="/proj/a", timestamp=self._today_ms(11))
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         paths = [p["path"] for p in result["projects"]]
         self.assertIn("/proj/a", paths)
         self.assertIn("/proj/b", paths)
@@ -1350,13 +1350,13 @@ class TestDailyReport(DBTestCase):
 
     def test_no_project_grouped_under_none(self):
         self._insert_session("s1", project="", timestamp=self._today_ms(9))
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         self.assertEqual(result["projects"][0]["path"], None)
 
     def test_subagents_excluded(self):
         self._insert_session("s_main", timestamp=self._today_ms(9), is_subagent=0)
         self._insert_session("s_sub", timestamp=self._today_ms(10), is_subagent=1)
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         self.assertEqual(result["total_sessions"], 1)
         self.assertEqual(result["projects"][0]["sessions"][0]["session_id"], "s_main")
 
@@ -1364,22 +1364,22 @@ class TestDailyReport(DBTestCase):
         long_msg = "x" * 400
         self._insert_session("s1", timestamp=self._today_ms(9))
         self._insert_messages("s1", [("user", long_msg)])
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         msg = result["projects"][0]["sessions"][0]["user_messages"][0]
         self.assertTrue(msg.endswith("..."))
-        self.assertEqual(len(msg), recall.DAILY_USER_MSG_MAX_CHARS + 3)
+        self.assertEqual(len(msg), memex.DAILY_USER_MSG_MAX_CHARS + 3)
 
     def test_sources_count(self):
         self._insert_session("s1", source="claude", timestamp=self._today_ms(9))
         self._insert_session("s2", source="claude", timestamp=self._today_ms(10))
         self._insert_session("s3", source="codex", timestamp=self._today_ms(11))
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         self.assertEqual(result["sources"]["claude"], 2)
         self.assertEqual(result["sources"]["codex"], 1)
 
     def test_resume_command_present(self):
         self._insert_session("s1", source="claude", project="/proj", timestamp=self._today_ms(9))
-        result = recall.build_daily_report(self.conn)
+        result = memex.build_daily_report(self.conn)
         cmd = result["projects"][0]["sessions"][0]["resume_command"]
         self.assertIn("claude", cmd)
         self.assertIn("s1", cmd)

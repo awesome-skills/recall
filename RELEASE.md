@@ -15,7 +15,7 @@ This project follows SemVer (`MAJOR.MINOR.PATCH`) and releases from `main`.
 
 Update version fields consistently:
 
-1. `scripts/recall.py`
+1. `scripts/memex.py`
    - `SKILL_VERSION = "x.y.z"`
 2. `SKILL.md`
    - `metadata.version: "x.y.z"`
@@ -26,7 +26,7 @@ Update version fields consistently:
 
 Commit version and changelog updates:
 
-- `git add scripts/recall.py SKILL.md CHANGELOG.md`
+- `git add scripts/memex.py SKILL.md CHANGELOG.md`
 - `git commit -m "release: vX.Y.Z"`
 
 ## 4. Tag and Push
@@ -43,9 +43,9 @@ After push:
 
 1. Confirm GitHub Actions checks pass on `main`.
 2. Verify runtime metadata:
-   - `python3 scripts/recall.py --version`
+   - `python3 scripts/memex.py --version`
 3. Verify diagnostics:
-   - `python3 scripts/recall.py --doctor`
+   - `python3 scripts/memex.py --doctor`
 
 ## 6. Rollback (if needed)
 

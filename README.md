@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔍 recall
+# 🔍 memex
 
 **Search and resume past conversations — right from your terminal.**
 
@@ -14,7 +14,7 @@
 
 ```
 ~/.claude/projects/**/*.jsonl ─┐
-                                ├──▶ Index ──▶ ~/.recall.db
+                                ├──▶ Index ──▶ ~/.memex.db
 ~/.codex/sessions/**/*.jsonl ──┘       │
                                        ├─ dir-level mtime checkpoint
                                        ├─ incremental per-file mtime
@@ -37,7 +37,7 @@ Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶
 
 A skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/) that builds a local full-text search index over all your past session transcripts. Find any conversation in seconds.
 
-Provide this repository URL to your agent to install the skill automatically, then use `/recall` or ask naturally:
+Provide this repository URL to your agent to install the skill automatically, then use `/memex` or ask naturally:
 
 > *"find the session where we discussed WebSocket reconnection"*
 
@@ -45,40 +45,40 @@ Provide this repository URL to your agent to install the skill automatically, th
 
 ```bash
 # Search across all sessions
-recall.py "WebSocket reconnect"
+memex.py "WebSocket reconnect"
 
 # Browse recent sessions (with one-line summaries)
-recall.py --list
+memex.py --list
 
 # List + filter by keyword (sorted by recency)
-recall.py --list "database migration"
+memex.py --list "database migration"
 
 # Combine filters
-recall.py "auth bug" --source claude --project ~/work/api --days 7
+memex.py "auth bug" --source claude --project ~/work/api --days 7
 
 # Paginate results
-recall.py --list --limit 10 --offset 10
+memex.py --list --limit 10 --offset 10
 
 # Include subagent sessions (hidden by default)
-recall.py --list --include-subagents
+memex.py --list --include-subagents
 
 # Hide summary lines
-recall.py --list --no-summary
+memex.py --list --no-summary
 
 # Customize summary length
-recall.py --list --summary-len 80
+memex.py --list --summary-len 80
 
 # Show installed version/build metadata
-recall.py --version
+memex.py --version
 
 # Run local health checks
-recall.py --doctor
+memex.py --doctor
 
 # Run doctor with safe auto-fixes
-recall.py --doctor --fix
+memex.py --doctor --fix
 
 # Machine-readable output
-recall.py --json "deploy"
+memex.py --json "deploy"
 ```
 
 ### Search syntax
@@ -122,7 +122,7 @@ JSON output includes a `resume_command` field per result, ready to run.
 ### CLI reference
 
 ```
-recall.py [QUERY] [OPTIONS]
+memex.py [QUERY] [OPTIONS]
 
 Positional:
   QUERY                     FTS5 search query (optional with --list)
@@ -148,7 +148,7 @@ Options:
 
 | Aspect | Detail |
 |:-------|:-------|
-| **Storage** | `~/.recall.db` — SQLite FTS5 + WAL, permissions `0600` |
+| **Storage** | `~/.memex.db` — SQLite FTS5 + WAL, permissions `0600` |
 | **Indexing** | Two-level: dir mtime checkpoint skips unchanged dirs, then per-file mtime |
 | **Ranking** | BM25 (80%) + recency boost (20%, 30-day half-life) |
 | **Content** | User & assistant text only — system noise, tools, thinking, images filtered |
@@ -166,7 +166,7 @@ Options:
 
 一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 和 [Codex](https://openai.com/index/codex/) 的 skill，在本地为所有历史会话建立全文搜索索引，几秒内找到任何一段对话。
 
-把本仓库地址提供给 agent 后可自动安装，随后使用 `/recall`，或者直接自然语言提问：
+把本仓库地址提供给 agent 后可自动安装，随后使用 `/memex`，或者直接自然语言提问：
 
 > *"找一下之前讨论 WebSocket 重连的会话"*
 
@@ -174,40 +174,40 @@ Options:
 
 ```bash
 # 全文搜索
-recall.py "WebSocket 重连"
+memex.py "WebSocket 重连"
 
 # 浏览最近的会话（含一行摘要）
-recall.py --list
+memex.py --list
 
 # 列出 + 关键词过滤（按时间倒序）
-recall.py --list "数据库迁移"
+memex.py --list "数据库迁移"
 
 # 组合过滤条件
-recall.py "认证 bug" --source claude --project ~/work/api --days 7
+memex.py "认证 bug" --source claude --project ~/work/api --days 7
 
 # 翻页
-recall.py --list --limit 10 --offset 10
+memex.py --list --limit 10 --offset 10
 
 # 显示子代理会话（默认隐藏）
-recall.py --list --include-subagents
+memex.py --list --include-subagents
 
 # 隐藏摘要行
-recall.py --list --no-summary
+memex.py --list --no-summary
 
 # 自定义摘要长度
-recall.py --list --summary-len 80
+memex.py --list --summary-len 80
 
 # 查看安装版本/构建信息
-recall.py --version
+memex.py --version
 
 # 运行本地健康检查
-recall.py --doctor
+memex.py --doctor
 
 # 运行健康检查并尝试安全自动修复
-recall.py --doctor --fix
+memex.py --doctor --fix
 
 # 输出 JSON（方便脚本消费）
-recall.py --json "部署"
+memex.py --json "部署"
 ```
 
 ### 搜索语法
@@ -251,7 +251,7 @@ JSON 输出中每条结果都带有可直接执行的 `resume_command` 字段。
 ### 命令参考
 
 ```
-recall.py [QUERY] [选项]
+memex.py [QUERY] [选项]
 
 位置参数:
   QUERY                     FTS5 搜索词（--list 模式下可选）
@@ -277,7 +277,7 @@ recall.py [QUERY] [选项]
 
 | 项目 | 说明 |
 |:-----|:-----|
-| **存储** | `~/.recall.db` — SQLite FTS5 + WAL 模式，权限 `0600` |
+| **存储** | `~/.memex.db` — SQLite FTS5 + WAL 模式，权限 `0600` |
 | **索引** | 两级：目录 mtime 检查点跳过未变更目录，再按文件 mtime 增量更新 |
 | **排序** | BM25（80%）+ 时间衰减（20%，30 天半衰期） |
 | **内容** | 仅索引用户和助手的文本 — 过滤系统噪音、工具调用、思考过程、图片 |
@@ -295,7 +295,7 @@ recall.py [QUERY] [选项]
 
 Found a bug or have an idea? / 发现 bug 或有新想法？
 
-[Open an issue](https://github.com/awesome-skills/recall/issues) · [Submit a PR](https://github.com/awesome-skills/recall/pulls)
+[Open an issue](https://github.com/awesome-skills/memex/issues) · [Submit a PR](https://github.com/awesome-skills/memex/pulls)
 
 Release process: see [RELEASE.md](RELEASE.md)
 
