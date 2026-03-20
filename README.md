@@ -37,6 +37,12 @@ Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶
 
 A skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://openai.com/index/codex/) that builds a local full-text search index over all your past session transcripts. Find any conversation in seconds.
 
+### Why Memex?
+
+In 1945, Vannevar Bush published *[As We May Think](https://www.theatlantic.com/magazine/archive/1945/07/as-we-may-think/303881/)*, describing a device he called the **Memex** (Memory Extender) — a personal machine that would store the entirety of a person's books, records, and communications, and could be consulted with "exceeding speed and flexibility." The user could retrace any trail of thought, picking up exactly where they left off.
+
+This tool does the same thing for your AI conversations. Every session you have with Claude or Codex is indexed locally. When you need to pick up a thread — a half-finished refactor, a debugging session from last week, a design decision you can't quite remember — you search and return to it in seconds. Not just a search history: an extension of your memory.
+
 Provide this repository URL to your agent to install the skill automatically, then use `/memex` or ask naturally:
 
 > *"find the session where we discussed WebSocket reconnection"*
@@ -165,6 +171,12 @@ Options:
 ## 中文
 
 一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 和 [Codex](https://openai.com/index/codex/) 的 skill，在本地为所有历史会话建立全文搜索索引，几秒内找到任何一段对话。
+
+### 为什么叫 Memex？
+
+1945 年，Vannevar Bush 发表了论文 *[As We May Think](https://www.theatlantic.com/magazine/archive/1945/07/as-we-may-think/303881/)*，提出了 **Memex**（Memory Extender，记忆延伸器）的概念——一种个人设备，能存储一个人全部的书籍、文件和记录，并能以极快的速度检索任意内容。使用者可以沿着思维的轨迹回溯，随时回到之前停下的地方。
+
+这个工具做的正是同一件事，只是对象换成了你与 AI 的所有对话。每一次和 Claude 或 Codex 的会话都会被索引到本地。当你需要重拾一个中途搁置的重构、一周前的调试过程、或者某个已经模糊的设计决策——搜索，几秒内回到现场。不只是搜索历史，而是延伸你的记忆。
 
 把本仓库地址提供给 agent 后可自动安装，随后使用 `/memex`，或者直接自然语言提问：
 
