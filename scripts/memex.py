@@ -18,16 +18,16 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from recall_common import extract_text, is_noise
+from memex_common import extract_text, is_noise
 
-SKILL_NAME = "recall"
+SKILL_NAME = "memex"
 SKILL_OWNER = "awesome-skills"
 SKILL_VERSION = "0.4.0"
 SCHEMA_VERSION = 2
 
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
-DB_PATH = Path.home() / ".recall.db"
+DB_PATH = Path.home() / ".memex.db"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
 
@@ -204,8 +204,15 @@ def print_version(json_mode=False):
 
 
 def migrate_db_location():
-    """Move recall.db from ~/.claude/ to ~/ if it exists at the old path."""
-    old_path = CLAUDE_DIR / "recall.db"
+    """Migrate DB from legacy paths to the current ~/.memex.db location.
+
+    Handles two generations of moves:
+      1. ~/.claude/recall.db  (original location)
+      2. ~/.recall.db         (intermediate name before rename to memex)
+    """
+    # Prefer the more recent intermediate path; fall back to the original.
+    legacy_recall = Path.home() / "recall.db"  # the old ~/.recall.db intermediate
+    old_path = legacy_recall if legacy_recall.exists() else CLAUDE_DIR / "recall.db"
     if old_path.exists() and not DB_PATH.exists():
         # Flush WAL into main file so only one rename is needed (avoids
         # crash-window where main file moved but WAL/SHM are left behind).
@@ -1295,18 +1302,18 @@ def build_doctor_suggestions(payload):
     warnings = payload.get("warnings", [])
 
     if not checks.get("db_writable", True):
-        suggestions.append("Verify write permissions for ~/.recall.db and parent directory.")
+        suggestions.append("Verify write permissions for ~/.memex.db and parent directory.")
     if not checks.get("claude_projects_dir_exists", False) and not checks.get("codex_sessions_dir_exists", False):
         suggestions.append("Ensure ~/.claude/projects or ~/.codex/sessions exists and contains session JSONL files.")
     if index.get("total_sessions", 0) == 0:
-        suggestions.append("Run: recall.py --reindex --list --limit 5")
+        suggestions.append("Run: memex.py --reindex --list --limit 5")
     if warnings and not suggestions:
-        suggestions.append("Run: recall.py --doctor --json")
+        suggestions.append("Run: memex.py --doctor --json")
     return suggestions
 
 
 def build_doctor_payload(conn, fix_applied=False, actions=None):
-    """Collect health diagnostics for the local recall index."""
+    """Collect health diagnostics for the local memex index."""
     can_write = True
     write_error = ""
     try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for recall.py.
+"""Regression tests for memex.py.
 
 Covers: query sanitization, project matching, CJK fallback, orphan cleanup,
 subagent filtering, slug deduplication, directory checkpointing, noise filtering.
@@ -15,14 +15,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-# Add scripts dir to path so we can import recall
+# Add scripts dir to path so we can import memex as recall
 SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
 import sys
 
 sys.path.insert(0, SCRIPTS_DIR)
 
-import recall
-from recall_common import extract_text, is_noise
+import memex as recall
+from memex_common import extract_text, is_noise
 
 
 class DBTestCase(unittest.TestCase):
@@ -422,7 +422,7 @@ class TestNoiseFiltering(unittest.TestCase):
         self.assertTrue(is_noise('Tool result of `get_variables`. Calling `get_variables` is not necessary anymore.'))
 
     def test_unknown_skill_is_noise(self):
-        self.assertTrue(is_noise("Unknown skill: recall"))
+        self.assertTrue(is_noise("Unknown skill: memex"))
         self.assertTrue(is_noise("Unknown skill: ralph-loop"))
 
     def test_mcp_tool_result_not_used_as_summary(self):
@@ -671,10 +671,10 @@ class TestSchemaMigration(unittest.TestCase):
 class TestVersionHelpers(unittest.TestCase):
 
     def test_build_version_payload_without_db(self):
-        with patch.object(recall, "DB_PATH", Path("/tmp/nonexistent-recall-db.sqlite")), \
+        with patch.object(recall, "DB_PATH", Path("/tmp/nonexistent-memex-db.sqlite")), \
              patch.object(recall, "detect_commit_sha", return_value="abc1234"):
             payload = recall.build_version_payload()
-        self.assertEqual(payload["name"], "recall")
+        self.assertEqual(payload["name"], "memex")
         self.assertEqual(payload["owner"], "awesome-skills")
         self.assertEqual(payload["version"], recall.SKILL_VERSION)
         self.assertEqual(payload["schema_version"], recall.SCHEMA_VERSION)
@@ -702,7 +702,7 @@ class TestDoctorPayload(DBTestCase):
         self._insert_session("s1", source="codex", summary="hello")
         self._insert_messages("s1", [("user", "hello")])
         payload = recall.build_doctor_payload(self.conn)
-        self.assertEqual(payload["name"], "recall")
+        self.assertEqual(payload["name"], "memex")
         self.assertIn("checks", payload)
         self.assertIn("index", payload)
         self.assertEqual(payload["index"]["total_sessions"], 1)

@@ -1,0 +1,34 @@
+{
+  "_roadmapMeta": {
+    "updatedAt": 1773993518085
+  },
+  "roadmap": {
+    "objective": "实现 recall --daily 日报功能",
+    "tasks": [
+      {
+        "id": 1,
+        "number": "01",
+        "pinned": false,
+        "sortOrder": 1,
+        "status": "done",
+        "title": "设计方案审核与确认：recall --daily [DATE] 结构化 JSON 日报"
+      },
+      {
+        "id": 2,
+        "number": "02",
+        "pinned": false,
+        "sortOrder": 2,
+        "status": "done",
+        "title": "实现 build_daily_report() 及 --daily CLI 参数，含单元测试"
+      },
+      {
+        "id": 3,
+        "number": "03",
+        "pinned": false,
+        "sortOrder": 3,
+        "status": "done",
+        "title": "PR #1 bug 修复审查：summary 噪声、源分离、slug 截断、模式指示"
+      }
+    ]
+  }
+}
