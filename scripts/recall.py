@@ -303,6 +303,10 @@ def truncate_summary(summary, max_len):
         return ""
     if max_len is None or max_len <= 0:
         return summary
+    # Strip any MCP-injected tail even if it was stored before this fix.
+    summary = strip_inline_noise(summary)
+    if not summary:
+        return ""
     clean = " ".join(summary.split())
     if len(clean) <= max_len:
         return clean
@@ -749,7 +753,8 @@ def parse_codex_session(path):
     return metadata, messages
 
 
-def build_session_constraints(project=None, days=None, source=None, alias="s2", include_subagents=False):
+def build_session_constraints(project=None, days=None, source=None, alias="s2",
+                              include_subagents=False, exclude_projects=None):
     """Build session-level SQL filter clauses and parameter list."""
     conds = []
     params = []
@@ -759,6 +764,15 @@ def build_session_constraints(project=None, days=None, source=None, alias="s2", 
         project_clause, project_params = project_match_clause(project, alias)
         conds.append(project_clause)
         params.extend(project_params)
+    if exclude_projects:
+        for excl in exclude_projects:
+            excl_norm = normalize_project_path(excl)
+            if excl_norm:
+                like_prefix = escape_like(excl_norm)
+                conds.append(
+                    f"({alias}.project != ? AND {alias}.project NOT LIKE ? ESCAPE '{LIKE_ESCAPE}')"
+                )
+                params.extend([excl_norm, like_prefix + "/%"])
     if days:
         cutoff = int((time.time() - days * 86400) * 1000)
         conds.append(f"{alias}.timestamp >= ?")
@@ -982,11 +996,11 @@ def index_sessions(conn, force=False):
 # — Search —————————————————————————————————————————————————————————————————
 
 def list_sessions(conn, project=None, days=None, source=None, limit=10, query=None,
-                   include_subagents=False, offset=0):
+                   include_subagents=False, offset=0, exclude_projects=None):
     """List sessions ordered by recency, optionally filtered by a text query."""
     conds, params = build_session_constraints(
         project=project, days=days, source=source, alias="s",
-        include_subagents=include_subagents,
+        include_subagents=include_subagents, exclude_projects=exclude_projects,
     )
 
     if not query:
@@ -1037,7 +1051,8 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
 
 
 def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10,
-                        include_subagents=False, preserve_sql_order=False, offset=0):
+                        include_subagents=False, preserve_sql_order=False, offset=0,
+                        exclude_projects=None):
     """Fallback search for simple CJK queries using escaped substring matching."""
     terms = extract_cjk_terms(query)
     if not terms:
@@ -1047,7 +1062,7 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
     like_params = [f"%{escape_like(term)}%" for term in terms]
     session_conds, session_params = build_session_constraints(
         project=project, days=days, source=source, alias="s",
-        include_subagents=include_subagents,
+        include_subagents=include_subagents, exclude_projects=exclude_projects,
     )
     session_filter = ""
     if session_conds:
@@ -1102,12 +1117,12 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
 
 
 def search_like_fallback(conn, query, project=None, days=None, source=None, limit=10,
-                         include_subagents=False, offset=0):
+                         include_subagents=False, offset=0, exclude_projects=None):
     """Fallback search using LIKE when FTS query fails (e.g. special characters)."""
     escaped = escape_like(query)
     session_conds, session_params = build_session_constraints(
         project=project, days=days, source=source, alias="s",
-        include_subagents=include_subagents,
+        include_subagents=include_subagents, exclude_projects=exclude_projects,
     )
     session_filter = ""
     if session_conds:
@@ -1147,7 +1162,8 @@ def search_like_fallback(conn, query, project=None, days=None, source=None, limi
     return results
 
 
-def search(conn, query, project=None, days=None, source=None, limit=10, include_subagents=False, offset=0):
+def search(conn, query, project=None, days=None, source=None, limit=10, include_subagents=False, offset=0,
+           exclude_projects=None):
     """Search indexed sessions."""
     safe_query = sanitize_fts_query(query)
 
@@ -1158,7 +1174,7 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
 
     subconds, subparams = build_session_constraints(
         project=project, days=days, source=source, alias="s2",
-        include_subagents=include_subagents,
+        include_subagents=include_subagents, exclude_projects=exclude_projects,
     )
     if subconds:
         session_filter = (
@@ -1531,6 +1547,8 @@ def main():
     parser.add_argument("query", nargs="?", help="Search query; optional in --list mode to filter listed sessions")
     parser.add_argument("--list", action="store_true", help="List recent sessions; optional QUERY filters the list")
     parser.add_argument("--project", help="Filter to sessions from an exact project path or its child paths")
+    parser.add_argument("--exclude-project", dest="exclude_project", action="append", metavar="PATH",
+                        help="Exclude sessions from PATH and its children (repeatable)")
     parser.add_argument("--days", type=int, help="Only sessions from last N days")
     parser.add_argument("--source", choices=["claude", "codex"], help="Filter by source (claude or codex)")
     parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
@@ -1575,6 +1593,8 @@ def main():
     # Expand --project . to the current working directory.
     if args.project == ".":
         args.project = os.getcwd()
+    # Expand any --exclude-project . entries similarly.
+    excl = [os.getcwd() if p == "." else p for p in (args.exclude_project or [])] or None
 
     migrate_db_location()
     new_db = not DB_PATH.exists()
@@ -1647,12 +1667,13 @@ def main():
                 query=args.query,
                 include_subagents=inc_sub,
                 offset=args.offset,
+                exclude_projects=excl,
             )
         else:
             results = search(
                 conn, args.query, project=args.project, days=args.days,
                 source=args.source, limit=args.limit, include_subagents=inc_sub,
-                offset=args.offset,
+                offset=args.offset, exclude_projects=excl,
             )
 
             # For simple Chinese queries, augment sparse FTS results with substring fallback.
@@ -1667,6 +1688,7 @@ def main():
                     source=args.source,
                     limit=args.limit,
                     include_subagents=inc_sub,
+                    exclude_projects=excl,
                 )
                 existing_ids = {row[0] for row in results}
                 for row in fallback:
