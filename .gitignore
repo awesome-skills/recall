@@ -9,3 +9,4 @@ __pycache__/
 .recall.db-wal
 .recall.db-shm
 docs/plans/
+.superset/

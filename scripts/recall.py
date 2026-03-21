@@ -1196,18 +1196,18 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
         ranked = conn.execute(inner_sql, fts_params).fetchall()
     except sqlite3.OperationalError as e:
         print(f"FTS search error, falling back to LIKE: {e}", file=sys.stderr)
-        return search_like_fallback(
+        return _filter_deleted(search_like_fallback(
             conn, query, project=project, days=days, source=source,
             limit=limit, include_subagents=include_subagents, offset=offset,
-        )
+        ))
 
     if not ranked:
         # FTS returned nothing — try CJK substring fallback for CJK queries.
         if contains_cjk(query) and is_simple_query(query):
-            return search_cjk_fallback(
+            return _filter_deleted(search_cjk_fallback(
                 conn, query, project=project, days=days, source=source,
                 limit=limit, include_subagents=include_subagents, offset=offset,
-            )
+            ))
         return []
 
     # Batch fetch session metadata (eliminates N per-session queries)
