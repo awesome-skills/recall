@@ -1341,6 +1341,12 @@ class TestSanitizeUnbalancedQuotes(unittest.TestCase):
         result = recall.sanitize_fts_query('"a" "b')
         self.assertEqual(result.count('"') % 2, 0, f"Unbalanced quotes in: {result}")
 
+    def test_preserves_valid_phrase_in_mixed_input(self):
+        # "hello world" foo" — the valid phrase should be preserved, trailing quote closed
+        result = recall.sanitize_fts_query('"hello world" foo"')
+        self.assertIn('"hello world"', result)
+        self.assertEqual(result.count('"') % 2, 0)
+
 
 # ── LIKE fallback recency ranking ───────────────────────────────────────
 

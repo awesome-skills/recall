@@ -95,6 +95,7 @@ def create_schema(conn):
 
 def migrate_schema(conn):
     """Add columns if upgrading from an older schema."""
+    altered = False
     for col, col_type, default in [
         ("source", "TEXT", "'claude'"),
         ("file_path", "TEXT", "''"),
@@ -106,7 +107,9 @@ def migrate_schema(conn):
             conn.execute(f"SELECT {col} FROM sessions LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type} DEFAULT {default}")
-            conn.commit()
+            altered = True
+    if altered:
+        conn.commit()
     current_ver = conn.execute("PRAGMA user_version").fetchone()[0]
     if int(current_ver or 0) < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -474,10 +477,8 @@ def sanitize_fts_query(query):
     # If user explicitly used FTS operators, trust them — but fix unbalanced quotes first.
     if FTS_SPECIAL_QUERY_RE.search(query):
         if query.count('"') % 2 != 0:
-            query = query.replace('"', '')
-            # Fall through to the token-quoting logic below
-        else:
-            return query
+            query = query + '"'  # Close the unbalanced quote rather than stripping all
+        return query
     # Check if any token has operator chars that need quoting
     tokens = query.split()
     needs_quoting = False
@@ -1259,7 +1260,7 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
     if contains_cjk(query) and is_simple_query(query) and len(results) < limit:
         fallback = search_cjk_fallback(
             conn, query, project=project, days=days, source=source,
-            limit=limit, include_subagents=include_subagents,
+            limit=limit, include_subagents=include_subagents, offset=offset,
         )
         existing_ids = {r.session_id for r in results}
         for row in fallback:
@@ -1523,6 +1524,7 @@ def main():
 
     migrate_db_location()
     new_db = not DB_PATH.exists()
+    conn = None
     old_umask = os.umask(0o077)
     try:
         conn = sqlite3.connect(str(DB_PATH))
@@ -1681,7 +1683,8 @@ def main():
                 print(f"    > {excerpt_clean}")
             print()
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":
