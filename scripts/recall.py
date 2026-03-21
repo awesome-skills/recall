@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 import shlex
+from collections import namedtuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -20,14 +21,14 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from recall_common import extract_text, is_noise
 
-SKILL_NAME = "recall"
+SKILL_NAME = "memex"
 SKILL_OWNER = "awesome-skills"
 SKILL_VERSION = "0.4.0"
 SCHEMA_VERSION = 1
 
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path.home() / ".codex"
-DB_PATH = Path.home() / ".recall.db"
+DB_PATH = Path.home() / ".memex.db"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
 
@@ -37,6 +38,11 @@ CANDIDATE_OVERFETCH_FACTOR = 3  # fetch N× limit to allow recency re-ranking
 RECENCY_WEIGHT = 0.2            # blended rank = bm25 * (1 + weight * boost)
 RECENCY_HALF_LIFE_DAYS = 30     # exponential decay half-life
 LN2 = 0.693147                  # math.log(2), used in decay formula
+
+SearchResult = namedtuple('SearchResult', [
+    'session_id', 'source', 'file_path', 'project', 'slug',
+    'timestamp', 'excerpt', 'rank', 'summary',
+])
 
 
 def create_schema(conn):
@@ -194,23 +200,37 @@ def print_version(json_mode=False):
 
 
 def migrate_db_location():
-    """Move recall.db from ~/.claude/ to ~/ if it exists at the old path."""
-    old_path = CLAUDE_DIR / "recall.db"
-    if old_path.exists() and not DB_PATH.exists():
-        # Flush WAL into main file so only one rename is needed (avoids
-        # crash-window where main file moved but WAL/SHM are left behind).
+    """Move DB from legacy locations to current DB_PATH."""
+    legacy_paths = [
+        CLAUDE_DIR / "recall.db",       # v0.1-v0.2 location
+        Path.home() / ".recall.db",     # v0.3-v0.4 location
+    ]
+    for old_path in legacy_paths:
+        if not old_path.exists() or old_path == DB_PATH:
+            continue
+        # Flush WAL into main file first.
         try:
             tmp_conn = sqlite3.connect(str(old_path))
             tmp_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             tmp_conn.close()
         except sqlite3.Error:
             pass
+        # Atomic migration: os.link fails if target already exists (EEXIST).
         try:
-            old_path.rename(DB_PATH)
-        except OSError as e:
-            print(f"Warning: could not migrate {old_path} to {DB_PATH}: {e}", file=sys.stderr)
-            return
-        # Clean up any residual WAL/SHM files
+            os.link(str(old_path), str(DB_PATH))
+            old_path.unlink()
+        except FileExistsError:
+            break  # Target already exists — skip migration.
+        except OSError:
+            # link() not supported (e.g. cross-device) — fall back to rename.
+            if DB_PATH.exists():
+                break
+            try:
+                old_path.rename(DB_PATH)
+            except OSError as e:
+                print(f"Warning: could not migrate {old_path} to {DB_PATH}: {e}", file=sys.stderr)
+                continue
+        # Clean up residual WAL/SHM files.
         for suffix in ("-wal", "-shm"):
             old_extra = Path(str(old_path) + suffix)
             if old_extra.exists():
@@ -218,6 +238,7 @@ def migrate_db_location():
                     old_extra.unlink()
                 except OSError:
                     pass
+        break  # Migrated successfully
 
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
@@ -293,12 +314,12 @@ def deduplicate_slugs(results):
     """
     slug_counts = {}
     for row in results:
-        slug = row[4] or ""
+        slug = row.slug or ""
         slug_counts[slug] = slug_counts.get(slug, 0) + 1
 
     display_slugs = {}
     for row in results:
-        session_id, slug = row[0], row[4] or ""
+        session_id, slug = row.session_id, row.slug or ""
         if slug_counts.get(slug, 1) > 1:
             suffix = session_id[-8:] if len(session_id) >= 8 else session_id
             display_slugs[session_id] = f"{slug}-{suffix}"
@@ -308,7 +329,7 @@ def deduplicate_slugs(results):
 
 
 def result_to_dict(row, display_slug=None, summary_len=120, include_summary=True):
-    """Convert an internal result tuple to a serializable dict."""
+    """Convert a SearchResult to a serializable dict."""
     session_id, source, file_path, project, slug, timestamp, excerpt, rank, summary = row
     parent_sid = subagent_parent_session_id(file_path)
     summary_value = truncate_summary(summary or "", summary_len) if include_summary else ""
@@ -384,6 +405,11 @@ def make_excerpt(text, needle=None, max_len=200):
     return clean[:max_len] + ("..." if len(clean) > max_len else "")
 
 
+def _filter_deleted(results):
+    """Remove results whose source file no longer exists."""
+    return [r for r in results if not r.file_path or os.path.exists(r.file_path)]
+
+
 def infer_project_from_path(file_path):
     """Infer project path from Claude session file path.
 
@@ -445,9 +471,13 @@ def sanitize_fts_query(query):
     """
     if not query:
         return query
-    # If user explicitly used FTS operators, trust them
+    # If user explicitly used FTS operators, trust them — but fix unbalanced quotes first.
     if FTS_SPECIAL_QUERY_RE.search(query):
-        return query
+        if query.count('"') % 2 != 0:
+            query = query.replace('"', '')
+            # Fall through to the token-quoting logic below
+        else:
+            return query
     # Check if any token has operator chars that need quoting
     tokens = query.split()
     needs_quoting = False
@@ -964,7 +994,7 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
         sql += " ORDER BY timestamp DESC, session_id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         rows = conn.execute(sql, params).fetchall()
-        return [(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows]
+        return _filter_deleted([SearchResult(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows])
 
     # Query-filtered list mode: match text, then sort by recency.
     safe_query = sanitize_fts_query(query)
@@ -979,18 +1009,18 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
         rows = conn.execute(query_sql, query_params).fetchall()
     except sqlite3.OperationalError as e:
         print(f"List query error, falling back to LIKE: {e}", file=sys.stderr)
-        return search_like_fallback(
+        return _filter_deleted(search_like_fallback(
             conn, query, project=project, days=days, source=source,
             limit=limit, include_subagents=include_subagents, offset=offset,
-        )
+        ))
 
-    results = [(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows]
+    results = [SearchResult(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows]
     if results:
-        return results
+        return _filter_deleted(results)
 
     # If FTS under-recalls for simple CJK query, use substring fallback and keep recency order.
     if contains_cjk(query) and is_simple_query(query):
-        return search_cjk_fallback(
+        return _filter_deleted(search_cjk_fallback(
             conn,
             query,
             project=project,
@@ -1000,8 +1030,8 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
             include_subagents=include_subagents,
             preserve_sql_order=True,
             offset=offset,
-        )
-    return results
+        ))
+    return _filter_deleted(results)
 
 
 def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10,
@@ -1060,12 +1090,13 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
         else:
             recency_boost = 0.0
 
-        # Keep FTS-ranked results ahead of fallback results; use recency within fallback set.
-        blended_rank = 1.0 - RECENCY_WEIGHT * recency_boost
-        results.append((session_id, src, file_path, project_value, slug, timestamp, excerpt, blended_rank, summary or ""))
+        # No BM25 score available in fallback — use a fixed base and subtract
+        # recency boost so recent results sort ahead (more-negative = better).
+        blended_rank = -RECENCY_WEIGHT * recency_boost
+        results.append(SearchResult(session_id, src, file_path, project_value, slug, timestamp, excerpt, blended_rank, summary or ""))
 
     if not preserve_sql_order:
-        results.sort(key=lambda r: r[7])
+        results.sort(key=lambda r: r.rank)
     return results[offset:offset + limit]
 
 
@@ -1089,9 +1120,10 @@ def search_like_fallback(conn, query, project=None, days=None, source=None, limi
         WHERE m.text LIKE ? ESCAPE '\\'{session_filter}
         GROUP BY m.session_id
         ORDER BY s.timestamp DESC, match_rowid DESC
-        LIMIT ? OFFSET ?
+        LIMIT ?
     """
-    params = [f"%{escaped}%"] + session_params + [limit, offset]
+    candidate_limit = (offset + limit) * CANDIDATE_OVERFETCH_FACTOR
+    params = [f"%{escaped}%"] + session_params + [candidate_limit]
 
     try:
         matched = conn.execute(sql, params).fetchall()
@@ -1108,11 +1140,19 @@ def search_like_fallback(conn, query, project=None, days=None, source=None, limi
             text_map[rid] = txt
 
     results = []
+    now_ms = time.time() * 1000
     for session_id, rowid, src, file_path, project_value, slug_val, timestamp, summary in matched:
         excerpt = make_excerpt(text_map.get(rowid, ""), query)
-        results.append((session_id, src, file_path, project_value, slug_val, timestamp, excerpt, 0.0, summary or ""))
-
-    return results
+        if timestamp:
+            age_days = max((now_ms - timestamp) / 86_400_000, 0)
+            recency_boost = math.exp(-LN2 * age_days / RECENCY_HALF_LIFE_DAYS)
+        else:
+            recency_boost = 0.0
+        blended_rank = -RECENCY_WEIGHT * recency_boost
+        results.append(SearchResult(session_id, src, file_path, project_value, slug_val, timestamp, excerpt, blended_rank, summary or ""))
+    # Sort by rank (more negative = better), then by timestamp desc as tiebreaker.
+    results.sort(key=lambda r: (r.rank, -(r.timestamp or 0)))
+    return results[offset:offset + limit]
 
 
 def search(conn, query, project=None, days=None, source=None, limit=10, include_subagents=False, offset=0):
@@ -1162,6 +1202,12 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
         )
 
     if not ranked:
+        # FTS returned nothing — try CJK substring fallback for CJK queries.
+        if contains_cjk(query) and is_simple_query(query):
+            return search_cjk_fallback(
+                conn, query, project=project, days=days, source=source,
+                limit=limit, include_subagents=include_subagents, offset=offset,
+            )
         return []
 
     # Batch fetch session metadata (eliminates N per-session queries)
@@ -1207,9 +1253,22 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
             (safe_query, session_id),
         ).fetchone()
         excerpt = snippet_row[0] if snippet_row else ""
-        results.append((session_id, meta[0], meta[1], meta[2], meta[3], meta[4], excerpt, blended_rank, meta[5] or ""))
+        results.append(SearchResult(session_id, meta[0], meta[1], meta[2], meta[3], meta[4], excerpt, blended_rank, meta[5] or ""))
 
-    return results
+    # Augment sparse FTS results with CJK fallback if query contains CJK.
+    if contains_cjk(query) and is_simple_query(query) and len(results) < limit:
+        fallback = search_cjk_fallback(
+            conn, query, project=project, days=days, source=source,
+            limit=limit, include_subagents=include_subagents,
+        )
+        existing_ids = {r.session_id for r in results}
+        for row in fallback:
+            if row.session_id not in existing_ids:
+                results.append(row)
+        results.sort(key=lambda r: r.rank)
+        results = results[:limit]
+
+    return _filter_deleted(results)
 
 
 def format_timestamp(ts_ms, precise=False):
@@ -1243,7 +1302,7 @@ def build_doctor_suggestions(payload):
     warnings = payload.get("warnings", [])
 
     if not checks.get("db_writable", True):
-        suggestions.append("Verify write permissions for ~/.recall.db and parent directory.")
+        suggestions.append("Verify write permissions for ~/.memex.db and parent directory.")
     if not checks.get("claude_projects_dir_exists", False) and not checks.get("codex_sessions_dir_exists", False):
         suggestions.append("Ensure ~/.claude/projects or ~/.codex/sessions exists and contains session JSONL files.")
     if index.get("total_sessions", 0) == 0:
@@ -1289,9 +1348,16 @@ def build_doctor_payload(conn, fix_applied=False, actions=None):
     wal_size_bytes = _safe_size(wal_path)
     shm_size_bytes = _safe_size(shm_path)
 
+    try:
+        integrity_result = conn.execute("PRAGMA integrity_check").fetchone()
+        db_integrity = integrity_result[0] == "ok"
+    except sqlite3.Error:
+        db_integrity = False
+
     checks = {
         "db_exists": db_exists,
         "db_writable": can_write,
+        "db_integrity": db_integrity,
         "claude_projects_dir_exists": CLAUDE_PROJECTS_DIR.is_dir(),
         "codex_sessions_dir_exists": CODEX_SESSIONS_DIR.is_dir(),
     }
@@ -1520,31 +1586,6 @@ def main():
                 offset=args.offset,
             )
 
-            # For simple Chinese queries, augment sparse FTS results with substring fallback.
-            # Use offset=0 here because search() already applied the user's offset;
-            # this path only fills gaps in the current page with additional matches.
-            if contains_cjk(args.query) and is_simple_query(args.query) and len(results) < args.limit:
-                fallback = search_cjk_fallback(
-                    conn,
-                    args.query,
-                    project=args.project,
-                    days=args.days,
-                    source=args.source,
-                    limit=args.limit,
-                    include_subagents=inc_sub,
-                )
-                existing_ids = {row[0] for row in results}
-                for row in fallback:
-                    if row[0] not in existing_ids:
-                        results.append(row)
-                results.sort(key=lambda r: r[7])
-                results = results[:args.limit]
-
-        # Post-filter: remove results whose source file has been deleted.
-        # This is O(limit) stat calls — cheap — and avoids showing stale
-        # sessions between rate-limited full prune cycles.
-        results = [r for r in results if not r[2] or os.path.exists(r[2])]
-
         if not results:
             if args.json:
                 payload = {
@@ -1600,7 +1641,7 @@ def main():
             payload["results"] = [
                 result_to_dict(
                     row,
-                    display_slugs.get(row[0]),
+                    display_slugs.get(row.session_id),
                     summary_len=args.summary_len,
                     include_summary=show_summary,
                 )

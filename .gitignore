@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.memex.db
+.memex.db-wal
+.memex.db-shm
 .recall.db
 .recall.db-wal
 .recall.db-shm

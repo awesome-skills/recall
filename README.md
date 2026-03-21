@@ -37,7 +37,7 @@ Memex builds a local search index over all your past sessions. Find any conversa
 
 ### Install
 
-Provide this repository URL to your agent — the skill installs automatically. Then use `/recall` or ask naturally:
+Provide this repository URL to your agent — the skill installs automatically. Then use `/memex` or ask naturally:
 
 > *"find the session where we discussed WebSocket reconnection"*
 
@@ -129,7 +129,7 @@ Options:
 
 ```
 ~/.claude/projects/**/*.jsonl ─┐
-                                ├──▶ Index ──▶ ~/.recall.db
+                                ├──▶ Index ──▶ ~/.memex.db
 ~/.codex/sessions/**/*.jsonl ──┘       │
                                        ├─ dir-level mtime checkpoint
                                        ├─ per-file mtime tracking
@@ -144,14 +144,14 @@ Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶
 
 | Aspect | Detail |
 |:-------|:-------|
-| **Storage** | `~/.recall.db` — SQLite FTS5 + WAL, permissions `0600` |
+| **Storage** | `~/.memex.db` — SQLite FTS5 + WAL, permissions `0600` |
 | **Indexing** | Two-level: dir mtime checkpoint skips unchanged dirs, then per-file mtime |
 | **Ranking** | BM25 (80%) + recency boost (20%, 30-day half-life) |
 | **Content** | User & assistant text only — system noise, tools, thinking, images filtered |
 | **Summaries** | First meaningful user message per session, shown in `--list` and search |
 | **Subagents** | Indexed with parent session ID; hidden by default |
 | **Dependencies** | Zero — Python 3.9+ stdlib only |
-| **Migration** | Auto-migrates from legacy `~/.claude/recall.db` |
+| **Migration** | Auto-migrates from legacy `~/.claude/recall.db` and `~/.recall.db` |
 | **Tests** | 40+ test classes, regression suite + GitHub Actions CI |
 
 ---
@@ -178,7 +178,7 @@ Memex 为所有历史会话建立本地全文搜索索引，几秒内找到任�
 
 ### 安装
 
-把本仓库地址提供给 agent 即可自动安装，随后使用 `/recall` 或自然语言提问：
+把本仓库地址提供给 agent 即可自动安装，随后使用 `/memex` 或自然语言提问：
 
 > *"找一下之前讨论 WebSocket 重连的会话"*
 

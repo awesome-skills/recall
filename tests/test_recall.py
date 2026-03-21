@@ -186,32 +186,18 @@ class TestResumeCommand(unittest.TestCase):
 class TestResultSerialization(unittest.TestCase):
 
     def test_summary_truncation_and_resume_command(self):
-        row = (
-            "sid-1234",
-            "codex",
-            "/tmp/file.jsonl",
-            "/tmp/work",
-            "slug",
-            1709510400000,
-            "",
-            0.0,
-            "a" * 40,
+        row = recall.SearchResult(
+            "sid-1234", "codex", "/tmp/file.jsonl", "/tmp/work", "slug",
+            1709510400000, "", 0.0, "a" * 40,
         )
         result = recall.result_to_dict(row, summary_len=10, include_summary=True)
         self.assertEqual(result["summary"], "aaaaaaa...")
         self.assertEqual(result["resume_command"], "cd /tmp/work && codex resume sid-1234")
 
     def test_summary_disabled(self):
-        row = (
-            "sid-1",
-            "claude",
-            "/tmp/file.jsonl",
-            "/tmp/work",
-            "slug",
-            1709510400000,
-            "",
-            0.0,
-            "hello world",
+        row = recall.SearchResult(
+            "sid-1", "claude", "/tmp/file.jsonl", "/tmp/work", "slug",
+            1709510400000, "", 0.0, "hello world",
         )
         result = recall.result_to_dict(row, summary_len=20, include_summary=False)
         self.assertEqual(result["summary"], "")
@@ -367,8 +353,8 @@ class TestSlugDeduplication(unittest.TestCase):
 
     def test_unique_slugs_unchanged(self):
         results = [
-            ("sess-aaa11111", "claude", "", "/test", "slug-a", 1000, "", 0.0, ""),
-            ("sess-bbb22222", "claude", "", "/test", "slug-b", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-aaa11111", "claude", "", "/test", "slug-a", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-bbb22222", "claude", "", "/test", "slug-b", 1000, "", 0.0, ""),
         ]
         slugs = recall.deduplicate_slugs(results)
         self.assertEqual(slugs["sess-aaa11111"], "slug-a")
@@ -376,8 +362,8 @@ class TestSlugDeduplication(unittest.TestCase):
 
     def test_duplicate_slugs_get_suffix(self):
         results = [
-            ("sess-aaa11111", "claude", "", "/test", "same-slug", 1000, "", 0.0, ""),
-            ("sess-bbb22222", "claude", "", "/test", "same-slug", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-aaa11111", "claude", "", "/test", "same-slug", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-bbb22222", "claude", "", "/test", "same-slug", 1000, "", 0.0, ""),
         ]
         slugs = recall.deduplicate_slugs(results)
         self.assertIn("aaa11111", slugs["sess-aaa11111"])
@@ -386,9 +372,9 @@ class TestSlugDeduplication(unittest.TestCase):
 
     def test_mixed_unique_and_duplicate(self):
         results = [
-            ("sess-aaa11111", "claude", "", "/test", "dup", 1000, "", 0.0, ""),
-            ("sess-bbb22222", "claude", "", "/test", "dup", 1000, "", 0.0, ""),
-            ("sess-ccc33333", "claude", "", "/test", "unique", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-aaa11111", "claude", "", "/test", "dup", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-bbb22222", "claude", "", "/test", "dup", 1000, "", 0.0, ""),
+            recall.SearchResult("sess-ccc33333", "claude", "", "/test", "unique", 1000, "", 0.0, ""),
         ]
         slugs = recall.deduplicate_slugs(results)
         self.assertEqual(slugs["sess-ccc33333"], "unique")
@@ -645,7 +631,7 @@ class TestVersionHelpers(unittest.TestCase):
         with patch.object(recall, "DB_PATH", Path("/tmp/nonexistent-recall-db.sqlite")), \
              patch.object(recall, "detect_commit_sha", return_value="abc1234"):
             payload = recall.build_version_payload()
-        self.assertEqual(payload["name"], "recall")
+        self.assertEqual(payload["name"], "memex")
         self.assertEqual(payload["owner"], "awesome-skills")
         self.assertEqual(payload["version"], recall.SKILL_VERSION)
         self.assertEqual(payload["schema_version"], recall.SCHEMA_VERSION)
@@ -673,7 +659,7 @@ class TestDoctorPayload(DBTestCase):
         self._insert_session("s1", source="codex", summary="hello")
         self._insert_messages("s1", [("user", "hello")])
         payload = recall.build_doctor_payload(self.conn)
-        self.assertEqual(payload["name"], "recall")
+        self.assertEqual(payload["name"], "memex")
         self.assertIn("checks", payload)
         self.assertIn("index", payload)
         self.assertEqual(payload["index"]["total_sessions"], 1)
@@ -1260,6 +1246,152 @@ class TestDoctorFixForceReindex(DBTestCase):
                 )
 
             self.assertGreaterEqual(refreshed["index"]["total_sessions"], 1)
+
+
+# ── CJK fallback ranking ─────────────────────────────────────────────────
+
+class TestCJKFallbackRecencyRanking(DBTestCase):
+    """CJK fallback ranks should be negative so they interleave with FTS results."""
+
+    def test_cjk_fallback_ranks_are_negative(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("s1", timestamp=now_ms - 1 * 86_400_000)
+        self._insert_messages("s1", [("user", "数据库迁移问题")])
+
+        results = recall.search_cjk_fallback(self.conn, "数据库迁移", limit=10)
+        self.assertEqual(len(results), 1)
+        self.assertLess(results[0].rank, 0.0,
+                        f"CJK fallback rank should be negative, got {results[0].rank}")
+
+    def test_recent_session_ranks_higher(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("old", timestamp=now_ms - 90 * 86_400_000)
+        self._insert_messages("old", [("user", "数据库迁移问题")])
+        self._insert_session("new", timestamp=now_ms - 1 * 86_400_000)
+        self._insert_messages("new", [("user", "数据库迁移方案")])
+
+        results = recall.search_cjk_fallback(self.conn, "数据库迁移", limit=10)
+        self.assertEqual(len(results), 2)
+        ranks = {r.session_id: r.rank for r in results}
+        self.assertLess(ranks["new"], ranks["old"])
+
+
+# ── search() CJK integration ────────────────────────────────────────────
+
+class TestSearchCJKFallbackIntegration(DBTestCase):
+    """search() should automatically try CJK fallback when FTS returns empty."""
+
+    def test_search_returns_cjk_results_directly(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("s1", timestamp=now_ms)
+        self._insert_messages("s1", [("user", "讨论数据库迁移方案")])
+
+        results = recall.search(self.conn, "数据库迁移", limit=10)
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(results[0].session_id, "s1")
+
+
+# ── Deleted file filtering ──────────────────────────────────────────────
+
+class TestListFilterDeletedFiles(DBTestCase):
+    """list_sessions() should exclude sessions whose source file no longer exists."""
+
+    def test_list_excludes_deleted_file(self):
+        import tempfile
+        now_ms = int(time.time() * 1000)
+
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            existing_path = f.name
+            f.write(b'{"type":"human","message":{"content":"hello"}}\n')
+
+        self._insert_session("s1", timestamp=now_ms, file_path=existing_path)
+        self._insert_messages("s1", [("user", "existing session")])
+        self._insert_session("s2", timestamp=now_ms - 1000, file_path="/nonexistent/fake.jsonl")
+        self._insert_messages("s2", [("user", "deleted session")])
+        self._insert_session("s3", timestamp=now_ms - 2000, file_path="")
+        self._insert_messages("s3", [("user", "no path session")])
+
+        results = recall.list_sessions(self.conn, limit=10)
+        session_ids = [r.session_id for r in results]
+        self.assertIn("s1", session_ids)
+        self.assertNotIn("s2", session_ids)
+        self.assertIn("s3", session_ids)
+
+        os.unlink(existing_path)
+
+
+# ── Unbalanced quotes ───────────────────────────────────────────────────
+
+class TestSanitizeUnbalancedQuotes(unittest.TestCase):
+    """sanitize_fts_query should handle unbalanced double quotes gracefully."""
+
+    def test_unbalanced_opening_quote(self):
+        result = recall.sanitize_fts_query('he said "hello')
+        self.assertEqual(result.count('"') % 2, 0, f"Unbalanced quotes in: {result}")
+
+    def test_unbalanced_closing_quote(self):
+        result = recall.sanitize_fts_query('hello" world')
+        self.assertEqual(result.count('"') % 2, 0, f"Unbalanced quotes in: {result}")
+
+    def test_balanced_quotes_preserved(self):
+        result = recall.sanitize_fts_query('"hello world"')
+        self.assertEqual(result, '"hello world"')
+
+    def test_multiple_unbalanced(self):
+        result = recall.sanitize_fts_query('"a" "b')
+        self.assertEqual(result.count('"') % 2, 0, f"Unbalanced quotes in: {result}")
+
+
+# ── LIKE fallback recency ranking ───────────────────────────────────────
+
+class TestLikeFallbackRecencyRanking(DBTestCase):
+    """search_like_fallback should apply recency-based ranking."""
+
+    def test_results_have_nonzero_rank(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("s1", timestamp=now_ms - 1 * 86_400_000)
+        self._insert_messages("s1", [("user", "special-chars-query test")])
+        self._insert_session("s2", timestamp=now_ms - 60 * 86_400_000)
+        self._insert_messages("s2", [("user", "special-chars-query test")])
+
+        results = recall.search_like_fallback(self.conn, "special-chars-query", limit=10)
+        self.assertEqual(len(results), 2)
+        for r in results:
+            self.assertNotEqual(r.rank, 0.0, "LIKE fallback should compute recency rank")
+        ranks = {r.session_id: r.rank for r in results}
+        self.assertLess(ranks["s1"], ranks["s2"])
+
+
+# ── Doctor integrity check ──────────────────────────────────────────────
+
+class TestDoctorIntegrityCheck(DBTestCase):
+    """--doctor should include a db_integrity check."""
+
+    def test_integrity_check_present(self):
+        payload = recall.build_doctor_payload(self.conn)
+        self.assertIn("db_integrity", payload["checks"])
+
+    def test_integrity_check_ok_for_healthy_db(self):
+        payload = recall.build_doctor_payload(self.conn)
+        self.assertTrue(payload["checks"]["db_integrity"])
+
+
+# ── SearchResult namedtuple ─────────────────────────────────────────────
+
+class TestSearchResultNamedtuple(unittest.TestCase):
+    """SearchResult should support both named and positional access."""
+
+    def test_named_access(self):
+        r = recall.SearchResult("s1", "claude", "/tmp/f.jsonl", "/p", "sl", 1000, "ex", -0.5, "sum")
+        self.assertEqual(r.session_id, "s1")
+        self.assertEqual(r.rank, -0.5)
+        self.assertEqual(r.file_path, "/tmp/f.jsonl")
+
+    def test_tuple_unpacking(self):
+        r = recall.SearchResult("s1", "claude", "/tmp/f.jsonl", "/p", "sl", 1000, "ex", -0.5, "sum")
+        sid, src, fp, proj, slug, ts, exc, rank, summ = r
+        self.assertEqual(sid, "s1")
+        self.assertEqual(rank, -0.5)
 
 
 if __name__ == "__main__":
