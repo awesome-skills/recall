@@ -35,6 +35,18 @@ def extract_text(content):
     return ""
 
 
+def extract_claude_content(entry):
+    """Extract Claude message content from wrapped or top-level entry shapes."""
+    message = entry.get("message")
+    if isinstance(message, dict):
+        if "content" in message:
+            return message.get("content", "")
+        return entry.get("content", "")
+    if isinstance(message, (str, list)):
+        return message
+    return entry.get("content", "")
+
+
 def is_noise(text):
     """Return True if text is system noise that should not be indexed or shown as summary."""
     if not text:

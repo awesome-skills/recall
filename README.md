@@ -13,7 +13,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776ab?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen?style=flat-square)]()
-[![Tests](https://img.shields.io/badge/tests-119%20passed-success?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/awesome-skills/memex/actions)
+[![Tests](https://img.shields.io/badge/tests-passing-success?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/awesome-skills/memex/actions)
 [![CI](https://github.com/awesome-skills/memex/actions/workflows/tests.yml/badge.svg)](https://github.com/awesome-skills/memex/actions)
 
 [English](#english) · [中文](#中文)
@@ -54,25 +54,25 @@ Provide this repository URL to your agent — the skill installs automatically. 
 
 ```bash
 # Search across all sessions
-recall.py "WebSocket reconnect"
+python3 scripts/recall.py "WebSocket reconnect"
 
 # Browse recent sessions with summaries
-recall.py --list
+python3 scripts/recall.py --list
 
 # Filter by keyword, source, project, and time range
-recall.py "auth bug" --source claude --project ~/work/api --days 7
+python3 scripts/recall.py "auth bug" --source claude --project ~/work/api --days 7
 
 # Paginate through results
-recall.py --list --limit 10 --offset 10
+python3 scripts/recall.py --list --limit 10 --offset 10
 
 # Include subagent sessions (hidden by default)
-recall.py --list --include-subagents
+python3 scripts/recall.py --list --include-subagents
 
 # Machine-readable JSON output
-recall.py --json "deploy"
+python3 scripts/recall.py --json "deploy"
 
 # Health check & auto-fix
-recall.py --doctor --fix
+python3 scripts/recall.py --doctor --fix
 ```
 
 ### Search syntax
@@ -105,14 +105,14 @@ cd /path/to/project && codex resume SESSION_ID
 Read a full transcript:
 
 ```bash
-read_session.py /path/to/session.jsonl            # JSON
-read_session.py /path/to/session.jsonl --pretty    # human-readable
+python3 scripts/read_session.py /path/to/session.jsonl            # JSON
+python3 scripts/read_session.py /path/to/session.jsonl --pretty    # human-readable
 ```
 
 ### CLI reference
 
 ```
-recall.py [QUERY] [OPTIONS]
+python3 scripts/recall.py [QUERY] [OPTIONS]
 
 Positional:
   QUERY                     FTS5 search query (optional with --list)
@@ -161,7 +161,7 @@ Query ──▶ FTS5 MATCH ──▶ BM25 rank ──▶ recency boost ──▶
 | **Subagents** | Indexed with parent session ID; hidden by default |
 | **Dependencies** | Zero — Python 3.9+ stdlib only |
 | **Migration** | Auto-migrates from legacy `~/.claude/recall.db` and `~/.recall.db` |
-| **Tests** | 119 tests across 40+ test classes + GitHub Actions CI |
+| **Tests** | unittest suite + GitHub Actions CI |
 
 ---
 
@@ -197,25 +197,25 @@ Memex 为所有历史会话建立本地全文搜索索引，几秒内找到任�
 
 ```bash
 # 全文搜索
-recall.py "WebSocket 重连"
+python3 scripts/recall.py "WebSocket 重连"
 
 # 浏览最近的会话（含摘要）
-recall.py --list
+python3 scripts/recall.py --list
 
 # 组合过滤：关键词 + 来源 + 项目 + 时间
-recall.py "认证 bug" --source claude --project ~/work/api --days 7
+python3 scripts/recall.py "认证 bug" --source claude --project ~/work/api --days 7
 
 # 翻页
-recall.py --list --limit 10 --offset 10
+python3 scripts/recall.py --list --limit 10 --offset 10
 
 # 显示子代理会话（默认隐藏）
-recall.py --list --include-subagents
+python3 scripts/recall.py --list --include-subagents
 
 # JSON 输出
-recall.py --json "部署"
+python3 scripts/recall.py --json "部署"
 
 # 健康检查 & 自动修复
-recall.py --doctor --fix
+python3 scripts/recall.py --doctor --fix
 ```
 
 ### 搜索语法
@@ -248,14 +248,14 @@ cd /path/to/project && codex resume SESSION_ID
 查看完整对话记录：
 
 ```bash
-read_session.py /path/to/session.jsonl            # JSON 格式
-read_session.py /path/to/session.jsonl --pretty    # 可读格式
+python3 scripts/read_session.py /path/to/session.jsonl            # JSON 格式
+python3 scripts/read_session.py /path/to/session.jsonl --pretty    # 可读格式
 ```
 
 ### 命令参考
 
 ```
-recall.py [QUERY] [选项]
+python3 scripts/recall.py [QUERY] [选项]
 
 位置参数:
   QUERY                     FTS5 搜索词（--list 模式下可选）

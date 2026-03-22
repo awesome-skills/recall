@@ -210,12 +210,22 @@ class TestCJKHelpers(unittest.TestCase):
     def test_contains_cjk_chinese(self):
         self.assertTrue(recall.contains_cjk("测试"))
 
+    def test_contains_cjk_japanese_katakana(self):
+        self.assertTrue(recall.contains_cjk("カタカナ"))
+
+    def test_contains_cjk_korean_hangul(self):
+        self.assertTrue(recall.contains_cjk("한글"))
+
     def test_contains_cjk_english(self):
         self.assertFalse(recall.contains_cjk("test"))
 
     def test_extract_cjk_terms(self):
         terms = recall.extract_cjk_terms("hello 你好 world 世界")
         self.assertEqual(terms, ["你好", "世界"])
+
+    def test_extract_cjk_terms_japanese(self):
+        terms = recall.extract_cjk_terms("検索 カタカナ ひらがな")
+        self.assertEqual(terms, ["検索", "カタカナ", "ひらがな"])
 
     def test_extract_cjk_dedup(self):
         terms = recall.extract_cjk_terms("你好 test 你好")
@@ -562,6 +572,26 @@ class TestClaudeSessionParser(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_top_level_content_parsed(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            entries = [
+                {"type": "user", "role": "user", "content": "top level content"},
+                {"type": "assistant", "role": "assistant", "content": "reply"},
+            ]
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+            path = f.name
+
+        try:
+            result = recall.parse_claude_session(path)
+            self.assertIsNotNone(result)
+            metadata, messages = result
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[0][1], "top level content")
+            self.assertEqual(metadata["summary"], "top level content")
+        finally:
+            os.unlink(path)
+
 
 # ── Concurrent safety ─────────────────────────────────────────────────────────
 
@@ -804,6 +834,24 @@ class TestReadSessionNoiseFiltering(unittest.TestCase):
             importlib.reload(read_session)
             messages = list(read_session.iter_messages(path))
             self.assertEqual(len(messages), 1)
+        finally:
+            os.unlink(path)
+
+    def test_top_level_content_is_not_dropped(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps({
+                "type": "user",
+                "role": "user",
+                "content": "top level content survives",
+            }) + "\n")
+            path = f.name
+
+        try:
+            import read_session
+            import importlib
+            importlib.reload(read_session)
+            messages = list(read_session.iter_messages(path))
+            self.assertEqual(messages, [("user", "top level content survives")])
         finally:
             os.unlink(path)
 
@@ -1290,6 +1338,15 @@ class TestSearchCJKFallbackIntegration(DBTestCase):
         self.assertGreaterEqual(len(results), 1)
         self.assertEqual(results[0].session_id, "s1")
 
+    def test_search_returns_japanese_results_via_fallback(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("s1", timestamp=now_ms)
+        self._insert_messages("s1", [("user", "カタカナ検索の話")])
+
+        results = recall.search(self.conn, "カタカナ", limit=10)
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(results[0].session_id, "s1")
+
 
 # ── Deleted file filtering ──────────────────────────────────────────────
 
@@ -1318,6 +1375,61 @@ class TestListFilterDeletedFiles(DBTestCase):
         self.assertIn("s3", session_ids)
 
         os.unlink(existing_path)
+
+    def test_list_backfills_page_after_deleted_rows(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("gone", timestamp=now_ms + 3000, file_path="/nonexistent/gone.jsonl")
+        self._insert_messages("gone", [("user", "deleted session")])
+        self._insert_session("live1", timestamp=now_ms + 2000, file_path="")
+        self._insert_messages("live1", [("user", "live session 1")])
+        self._insert_session("live2", timestamp=now_ms + 1000, file_path="")
+        self._insert_messages("live2", [("user", "live session 2")])
+
+        results = recall.list_sessions(self.conn, limit=2, include_subagents=True)
+        self.assertEqual([r.session_id for r in results], ["live1", "live2"])
+
+    def test_search_backfills_page_after_deleted_rows(self):
+        now_ms = int(time.time() * 1000)
+        self._insert_session("gone", timestamp=now_ms + 3000, file_path="/nonexistent/gone.jsonl")
+        self._insert_messages("gone", [("user", "hello world")])
+        self._insert_session("live1", timestamp=now_ms + 2000, file_path="")
+        self._insert_messages("live1", [("user", "hello world")])
+        self._insert_session("live2", timestamp=now_ms + 1000, file_path="")
+        self._insert_messages("live2", [("user", "hello world")])
+
+        results = recall.search(self.conn, "hello", limit=2, include_subagents=True)
+        self.assertEqual([r.session_id for r in results], ["live1", "live2"])
+
+
+class TestIndexSessionsSkipsNoiseOnlyFiles(DBTestCase):
+    """Noise-only transcripts should not create empty sessions."""
+
+    def test_noise_only_file_not_indexed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            session_path = claude_dir / "noise.jsonl"
+            session_path.write_text(
+                json.dumps({
+                    "type": "user",
+                    "role": "user",
+                    "cwd": "/tmp/demo",
+                    "message": {"content": "<system-reminder>noise"},
+                    "timestamp": "2026-03-05T10:00:00Z",
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(recall, "CLAUDE_PROJECTS_DIR", claude_dir), \
+                 patch.object(recall, "CODEX_SESSIONS_DIR", Path("/nonexistent")):
+                indexed, skipped, total_sessions, total_messages, orphaned = recall.index_sessions(
+                    self.conn, force=True
+                )
+
+        self.assertEqual(indexed, 0)
+        self.assertEqual(skipped, 0)
+        self.assertEqual(orphaned, 0)
+        self.assertEqual(total_sessions, 0)
+        self.assertEqual(total_messages, 0)
 
 
 # ── Unbalanced quotes ───────────────────────────────────────────────────

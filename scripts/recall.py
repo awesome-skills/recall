@@ -19,7 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from recall_common import extract_text, is_noise
+from recall_common import extract_claude_content, extract_text, is_noise
 
 SKILL_NAME = "memex"
 SKILL_OWNER = "awesome-skills"
@@ -244,8 +244,18 @@ def migrate_db_location():
         break  # Migrated successfully
 
 
-CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
-CJK_SEGMENT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+CJK_CHAR_CLASS = (
+    r"\u3400-\u4dbf"
+    r"\u4e00-\u9fff"
+    r"\u3040-\u309f"
+    r"\u30a0-\u30ff"
+    r"\u31f0-\u31ff"
+    r"\u1100-\u11ff"
+    r"\u3130-\u318f"
+    r"\uac00-\ud7af"
+)
+CJK_RE = re.compile(rf"[{CJK_CHAR_CLASS}]")
+CJK_SEGMENT_RE = re.compile(rf"[{CJK_CHAR_CLASS}]+")
 FTS_SPECIAL_QUERY_RE = re.compile(r'["*():]|(^|\s)(AND|OR|NOT)(\s|$)', re.IGNORECASE)
 CLAUDE_SUBAGENT_RE = re.compile(r"/([^/]+)/subagents/agent-[^/]+\.jsonl$")
 CLAUDE_PROJECT_DIR_RE = re.compile(r"/\.claude/projects/(-[^/]+)")
@@ -413,6 +423,30 @@ def _filter_deleted(results):
     return [r for r in results if not r.file_path or os.path.exists(r.file_path)]
 
 
+def _collect_visible_rows(fetch_rows, build_result, limit, offset, file_path_index=2):
+    """Page over ordered SQL rows while skipping deleted-source sessions."""
+    visible = []
+    target = offset + limit
+    batch_size = max(target * CANDIDATE_OVERFETCH_FACTOR, limit, 10)
+    raw_offset = 0
+
+    while len(visible) < target:
+        rows = fetch_rows(batch_size, raw_offset)
+        if not rows:
+            break
+
+        for row in rows:
+            file_path = row[file_path_index]
+            if not file_path or os.path.exists(file_path):
+                visible.append(build_result(row))
+
+        raw_offset += len(rows)
+        if len(rows) < batch_size:
+            break
+
+    return visible[offset:offset + limit]
+
+
 def infer_project_from_path(file_path):
     """Infer project path from Claude session file path.
 
@@ -563,14 +597,7 @@ def parse_claude_session(path):
                 # Extract text content — handle multiple formats:
                 # 1. {message: {content: "..."}} or {message: {content: [{type:"text",...}]}}
                 # 2. {content: "..."} or {content: [...]}
-                content = entry.get("message", {})
-                if isinstance(content, dict):
-                    content = content.get("content", "")
-                elif isinstance(content, str):
-                    # message field is a plain string
-                    pass
-                else:
-                    content = entry.get("content", "")
+                content = extract_claude_content(entry)
 
                 text = extract_text(content)
                 if not text:
@@ -943,6 +970,8 @@ def index_sessions(conn, force=False):
             continue
 
         metadata, messages = result
+        if not messages:
+            continue
 
         # Disable FTS5 automerge only when we know we'll write new rows.
         if not wrote_messages:
@@ -993,9 +1022,15 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
         if conds:
             sql += " WHERE " + " AND ".join(conds)
         sql += " ORDER BY timestamp DESC, session_id DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        rows = conn.execute(sql, params).fetchall()
-        return _filter_deleted([SearchResult(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows])
+
+        def fetch_rows(batch_limit, batch_offset):
+            return conn.execute(sql, params + [batch_limit, batch_offset]).fetchall()
+
+        def build_result(row):
+            sid, src, fpath, proj, slug, ts, summ = row
+            return SearchResult(sid, src, fpath, proj, slug, ts, "", 0.0, summ)
+
+        return _collect_visible_rows(fetch_rows, build_result, limit, offset)
 
     # Query-filtered list mode: match text, then sort by recency.
     safe_query = sanitize_fts_query(query)
@@ -1005,23 +1040,28 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
     query_sql += "s.session_id IN (SELECT session_id FROM messages WHERE messages MATCH ?) "
     query_sql += "ORDER BY s.timestamp DESC, s.session_id DESC LIMIT ? OFFSET ?"
 
-    query_params = params + [safe_query, limit, offset]
     try:
-        rows = conn.execute(query_sql, query_params).fetchall()
+        def fetch_rows(batch_limit, batch_offset):
+            query_params = params + [safe_query, batch_limit, batch_offset]
+            return conn.execute(query_sql, query_params).fetchall()
+
+        def build_result(row):
+            sid, src, fpath, proj, slug, ts, summ = row
+            return SearchResult(sid, src, fpath, proj, slug, ts, "", 0.0, summ)
+
+        results = _collect_visible_rows(fetch_rows, build_result, limit, offset)
     except sqlite3.OperationalError as e:
         print(f"List query error, falling back to LIKE: {e}", file=sys.stderr)
-        return _filter_deleted(search_like_fallback(
+        return search_like_fallback(
             conn, query, project=project, days=days, source=source,
             limit=limit, include_subagents=include_subagents, offset=offset,
-        ))
-
-    results = [SearchResult(sid, src, fpath, proj, slug, ts, "", 0.0, summ) for sid, src, fpath, proj, slug, ts, summ in rows]
+        )
     if results:
-        return _filter_deleted(results)
+        return results
 
     # If FTS under-recalls for simple CJK query, use substring fallback and keep recency order.
     if contains_cjk(query) and is_simple_query(query):
-        return _filter_deleted(search_cjk_fallback(
+        return search_cjk_fallback(
             conn,
             query,
             project=project,
@@ -1031,8 +1071,8 @@ def list_sessions(conn, project=None, days=None, source=None, limit=10, query=No
             include_subagents=include_subagents,
             preserve_sql_order=True,
             offset=offset,
-        ))
-    return _filter_deleted(results)
+        )
+    return results
 
 
 def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit=10,
@@ -1098,7 +1138,7 @@ def search_cjk_fallback(conn, query, project=None, days=None, source=None, limit
 
     if not preserve_sql_order:
         results.sort(key=lambda r: r.rank)
-    return results[offset:offset + limit]
+    return _filter_deleted(results)[offset:offset + limit]
 
 
 def search_like_fallback(conn, query, project=None, days=None, source=None, limit=10,
@@ -1153,7 +1193,7 @@ def search_like_fallback(conn, query, project=None, days=None, source=None, limi
         results.append(SearchResult(session_id, src, file_path, project_value, slug_val, timestamp, excerpt, blended_rank, summary or ""))
     # Sort by rank (more negative = better), then by timestamp desc as tiebreaker.
     results.sort(key=lambda r: (r.rank, -(r.timestamp or 0)))
-    return results[offset:offset + limit]
+    return _filter_deleted(results)[offset:offset + limit]
 
 
 def search(conn, query, project=None, days=None, source=None, limit=10, include_subagents=False, offset=0):
@@ -1228,6 +1268,9 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
         meta = meta_map.get(session_id)
         if not meta:
             continue
+        file_path = meta[1]
+        if file_path and not os.path.exists(file_path):
+            continue
 
         # Apply recency bias: blend BM25 score with a time-decay boost.
         # BM25 rank is negative (more negative = better match).
@@ -1269,7 +1312,7 @@ def search(conn, query, project=None, days=None, source=None, limit=10, include_
         results.sort(key=lambda r: r.rank)
         results = results[:limit]
 
-    return _filter_deleted(results)
+    return results
 
 
 def format_timestamp(ts_ms, precise=False):
@@ -1307,9 +1350,9 @@ def build_doctor_suggestions(payload):
     if not checks.get("claude_projects_dir_exists", False) and not checks.get("codex_sessions_dir_exists", False):
         suggestions.append("Ensure ~/.claude/projects or ~/.codex/sessions exists and contains session JSONL files.")
     if index.get("total_sessions", 0) == 0:
-        suggestions.append("Run: recall.py --reindex --list --limit 5")
+        suggestions.append("Run: python3 scripts/recall.py --reindex --list --limit 5")
     if warnings and not suggestions:
-        suggestions.append("Run: recall.py --doctor --json")
+        suggestions.append("Run: python3 scripts/recall.py --doctor --json")
     return suggestions
 
 

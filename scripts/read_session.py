@@ -9,7 +9,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from recall_common import extract_text, is_noise
+from recall_common import extract_claude_content, extract_text, is_noise
 
 
 def iter_messages(path):
@@ -43,11 +43,7 @@ def iter_messages(path):
                         continue
 
                 # Claude wraps in entry.message.content
-                content = entry.get("message", {})
-                if isinstance(content, dict):
-                    content = content.get("content", "")
-                elif not isinstance(content, str):
-                    content = entry.get("content", "")
+                content = extract_claude_content(entry)
 
             else:
                 # Codex — handle both legacy and current (wrapped payload) formats

@@ -23,5 +23,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Compile Python files
+        run: python -m py_compile scripts/*.py tests/*.py
+
+      - name: CLI smoke test
+        run: |
+          python scripts/recall.py --version > /dev/null
+          python scripts/read_session.py --help > /dev/null
+
       - name: Run unit tests
         run: python -m unittest -q
