@@ -52,21 +52,42 @@ Just paste this into Claude Code or Codex:
 
 > Install the memex skill from https://github.com/awesome-skills/memex
 
-Done — the agent clones the repo and registers it automatically. Then use `/memex` or ask naturally:
+Done — the agent should clone the repo and register it in the host tool's skill directory automatically. Then use `/memex` or ask naturally:
 
 > *"find the session where we discussed WebSocket reconnection"*
 
+> **Codex note:** If you install Memex while a Codex session is already running, restart or reopen the session before expecting `/memex` to appear in the loaded skill list.
+
 #### Option 2 — One-line install
 
-**macOS / Linux**
+Pick the install path that matches your host tool:
+
+**Claude Code — macOS / Linux**
 ```bash
 git clone https://github.com/awesome-skills/memex.git ~/.claude/skills/memex
 ```
 
-**Windows (PowerShell)**
+**Claude Code — Windows (PowerShell)**
 ```powershell
 git clone https://github.com/awesome-skills/memex.git "$env:USERPROFILE\.claude\skills\memex"
 ```
+
+**Codex — macOS / Linux**
+```bash
+git clone https://github.com/awesome-skills/memex.git ~/.agents/skills/memex
+```
+
+**Codex — alternate path used by some setups**
+```bash
+git clone https://github.com/awesome-skills/memex.git ~/.codex/skills/memex
+```
+
+**Codex — Windows (PowerShell)**
+```powershell
+git clone https://github.com/awesome-skills/memex.git "$env:USERPROFILE\.agents\skills\memex"
+```
+
+After installing into a Codex skill directory, start a new Codex session or resume again so the refreshed skill list is loaded.
 
 #### Option 3 — Standalone CLI
 
@@ -230,21 +251,42 @@ Memex 为所有历史会话建立本地全文搜索索引，几秒内找到任�
 
 > 安装 memex skill：https://github.com/awesome-skills/memex
 
-agent 会自动 clone 并注册，之后用 `/memex` 或自然语言提问：
+agent 会自动 clone 并注册到当前宿主工具对应的 skill 目录，之后用 `/memex` 或自然语言提问：
 
 > *"找一下之前讨论 WebSocket 重连的会话"*
 
+> **Codex 提示：** 如果是在一个已经运行中的 Codex 会话里安装 Memex，需要重开当前会话，新的 skill 列表才会生效。
+
 #### 方式二 — 一行命令
 
-**macOS / Linux**
+请按宿主工具选择安装路径：
+
+**Claude Code — macOS / Linux**
 ```bash
 git clone https://github.com/awesome-skills/memex.git ~/.claude/skills/memex
 ```
 
-**Windows (PowerShell)**
+**Claude Code — Windows (PowerShell)**
 ```powershell
 git clone https://github.com/awesome-skills/memex.git "$env:USERPROFILE\.claude\skills\memex"
 ```
+
+**Codex — macOS / Linux**
+```bash
+git clone https://github.com/awesome-skills/memex.git ~/.agents/skills/memex
+```
+
+**Codex — 某些环境的备用路径**
+```bash
+git clone https://github.com/awesome-skills/memex.git ~/.codex/skills/memex
+```
+
+**Codex — Windows (PowerShell)**
+```powershell
+git clone https://github.com/awesome-skills/memex.git "$env:USERPROFILE\.agents\skills\memex"
+```
+
+如果安装到了 Codex 的 skill 目录，请重新打开一个 Codex 会话，或重新执行 `codex resume ...`，这样 `/memex` 才会出现在新会话里。
 
 #### 方式三 — 独立 CLI 使用
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Installation docs
+- Clarify that Claude Code and Codex use different skill directories
+- Add explicit Codex install paths (`~/.agents/skills/memex`, `~/.codex/skills/memex`)
+- Document that Codex must reload or reopen the current session before newly installed skills appear
+
 ### Fork identity and diagnostics
 - Update skill metadata to fork ownership (`awesome-skills`) and bump skill version to `0.4.0`
 - Add `--version` to print version metadata, schema version, DB schema, and commit SHA

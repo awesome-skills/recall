@@ -23,6 +23,7 @@ python3 <MEMEX_SKILL_DIR>/scripts/recall.py [QUERY] [--list] [--project PATH] [-
 `<MEMEX_SKILL_DIR>` varies by installation. Common examples:
 - `~/.claude/skills/memex`
 - `~/.agents/skills/memex`
+- `~/.codex/skills/memex`
 
 ## Examples
 
@@ -103,6 +104,8 @@ claude --resume SESSION_ID
 cd /path/to/project
 codex resume SESSION_ID
 ```
+
+If you just installed Memex into a Codex skill directory during an already-running Codex session, restart or reopen that session before expecting `/memex` to be available.
 
 Each result includes a `File:` path. Use it to read the raw transcript (auto-detects format):
 
